@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'schedule_screen.dart';
 import 'data_management_screen.dart';
 import 'settings_screen.dart';
+import '../widgets/connection_status_widget.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -29,7 +30,12 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
-        child: _screens[_selectedIndex],
+        child: Column(
+          children: [
+            const ConnectionStatusWidget(),
+            Expanded(child: _screens[_selectedIndex]),
+          ],
+        ),
       ),
       bottomNavigationBar: Padding(
         padding: const EdgeInsets.fromLTRB(16.0, 0, 16.0, 16.0),

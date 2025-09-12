@@ -244,7 +244,7 @@ class ThemeProvider with ChangeNotifier {
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: colorScheme.surface,
         indicatorColor: colorScheme.primaryContainer,
-        labelTextStyle: MaterialStateProperty.all(
+        labelTextStyle: WidgetStateProperty.all(
           TextStyle(fontWeight: FontWeight.w500, fontSize: 12, color: colorScheme.onSurface),
         ),
       ),

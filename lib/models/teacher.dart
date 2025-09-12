@@ -4,6 +4,7 @@ class Teacher {
   String? email;
   DateTime createdAt;
   DateTime updatedAt;
+  int extraHours;
 
   Teacher({
     required this.id,
@@ -11,6 +12,7 @@ class Teacher {
     this.email,
     required this.createdAt,
     required this.updatedAt,
+    this.extraHours = 0,
   });
 
   factory Teacher.fromJson(Map<String, dynamic> json) => Teacher(
@@ -19,6 +21,7 @@ class Teacher {
         email: json['email'],
         createdAt: DateTime.parse(json['created_at']),
         updatedAt: DateTime.parse(json['updated_at']),
+        extraHours: json['extra_hours'] ?? 0,
       );
 
   Map<String, dynamic> toJson() => {
@@ -27,5 +30,6 @@ class Teacher {
         'email': email,
         'created_at': createdAt.toIso8601String(),
         'updated_at': updatedAt.toIso8601String(),
+        'extra_hours': extraHours,
       };
 }

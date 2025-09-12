@@ -21,9 +21,9 @@ CREATE TABLE public.schedule_slots (
   class_id uuid NOT NULL,
   CONSTRAINT schedule_slots_pkey PRIMARY KEY (id),
   CONSTRAINT schedule_slots_teacher_id_fkey FOREIGN KEY (teacher_id) REFERENCES public.teachers(id),
+  CONSTRAINT schedule_slots_schedule_id_fkey FOREIGN KEY (schedule_id) REFERENCES public.schedules(id),
   CONSTRAINT schedule_slots_subject_id_fkey FOREIGN KEY (subject_id) REFERENCES public.subjects(id),
-  CONSTRAINT schedule_slots_class_id_fkey FOREIGN KEY (class_id) REFERENCES public.classes(id),
-  CONSTRAINT schedule_slots_schedule_id_fkey FOREIGN KEY (schedule_id) REFERENCES public.schedules(id)
+  CONSTRAINT schedule_slots_class_id_fkey FOREIGN KEY (class_id) REFERENCES public.classes(id)
 );
 CREATE TABLE public.schedules (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -60,8 +60,8 @@ CREATE TABLE public.teacher_subjects (
   class_id uuid NOT NULL,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   CONSTRAINT teacher_subjects_pkey PRIMARY KEY (id),
-  CONSTRAINT teacher_subjects_class_id_fkey FOREIGN KEY (class_id) REFERENCES public.classes(id),
   CONSTRAINT teacher_subjects_subject_id_fkey FOREIGN KEY (subject_id) REFERENCES public.subjects(id),
+  CONSTRAINT teacher_subjects_class_id_fkey FOREIGN KEY (class_id) REFERENCES public.classes(id),
   CONSTRAINT teacher_subjects_teacher_id_fkey FOREIGN KEY (teacher_id) REFERENCES public.teachers(id)
 );
 CREATE TABLE public.teachers (
@@ -70,5 +70,6 @@ CREATE TABLE public.teachers (
   email text UNIQUE,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  extra_hours integer NOT NULL DEFAULT 0 CHECK (extra_hours >= 0),
   CONSTRAINT teachers_pkey PRIMARY KEY (id)
 );

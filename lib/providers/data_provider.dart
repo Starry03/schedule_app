@@ -13,6 +13,13 @@ class DataProvider with ChangeNotifier {
 
   List<Teacher> _teachers = [];
   List<Subject> _subjects = [];
+  
+  // Connection status tracking
+  bool _isOnline = true;
+  String? _lastError;
+
+  bool get isOnline => _isOnline;
+  String? get lastError => _lastError;
   List<ClassModel> _classes = [];
   List<Schedule> _schedules = [];
   List<ScheduleSlot> _scheduleSlots = [];
@@ -23,13 +30,51 @@ class DataProvider with ChangeNotifier {
   final Map<String, Set<String>> _teacherBusySlots = {}; // teacherId -> set of 'day-hour'
   final Map<String, int> _teacherWeeklyHours = {}; // teacherId -> hours scheduled this week
 
-  List<Teacher> get teachers => _teachers;
-  List<Subject> get subjects => _subjects;
-  List<ClassModel> get classes => _classes;
+  List<Teacher> get teachers => _teachers..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  List<Subject> get subjects => _subjects..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  List<ClassModel> get classes => _classes..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
   List<Schedule> get schedules => _schedules;
   List<ScheduleSlot> get scheduleSlots => _scheduleSlots;
   List<TeacherSubject> get teacherSubjects => _teacherSubjects;
   List<TeacherConstraint> get teacherConstraints => _teacherConstraints;
+
+  // Helper method to handle network errors consistently
+  Future<T?> _handleNetworkCall<T>(Future<T> Function() networkCall, String operationName) async {
+    try {
+      _lastError = null;
+      final result = await networkCall();
+      
+      // If we reach here, the call was successful
+      if (!_isOnline) {
+        _isOnline = true;
+        notifyListeners();
+      }
+      
+      return result;
+    } catch (error) {
+      _isOnline = false;
+      
+      String errorMessage;
+      if (error.toString().contains('Failed to connect') || 
+          error.toString().contains('Network is unreachable') ||
+          error.toString().contains('Connection refused') ||
+          error.toString().contains('SocketException')) {
+        errorMessage = 'Impossibile connettersi al server. Verifica la connessione internet.';
+      } else if (error.toString().contains('timeout')) {
+        errorMessage = 'Timeout nella connessione al server. Riprova più tardi.';
+      } else {
+        errorMessage = 'Errore durante $operationName: ${error.toString()}';
+      }
+      
+      _lastError = errorMessage;
+      notifyListeners();
+      
+      // Log the error for debugging
+      debugPrint('Network error in $operationName: $error');
+      
+      return null;
+    }
+  }
 
   // Track whether the currently loaded schedule has unsaved local changes
   bool _isScheduleDirty = false;
@@ -46,48 +91,86 @@ class DataProvider with ChangeNotifier {
   }
 
   Future<void> fetchTeachers() async {
-    final response = await _supabase.from('teachers').select();
-    _teachers = response.map((json) => Teacher.fromJson(json)).toList();
-    notifyListeners();
+    final response = await _handleNetworkCall(
+      () => _supabase.from('teachers').select(),
+      'caricamento insegnanti'
+    );
+    
+    if (response != null) {
+      _teachers = response.map((json) => Teacher.fromJson(json)).toList();
+      notifyListeners();
+    }
   }
 
-  Future<void> addTeacher(Teacher teacher) async {
+  Future<bool> addTeacher(Teacher teacher) async {
     // Create JSON without id for new records (let Supabase generate UUID)
     final teacherInsert = {
       'name': teacher.name,
       'email': teacher.email,
       'created_at': teacher.createdAt.toIso8601String(),
       'updated_at': teacher.updatedAt.toIso8601String(),
+      'extra_hours': teacher.extraHours,
     };
-    final response = await _supabase.from('teachers').insert(teacherInsert).select().single();
-    _teachers.add(Teacher.fromJson(response));
-    notifyListeners();
-  }
-
-  Future<void> updateTeacher(Teacher teacher) async {
-    await _supabase.from('teachers').update(teacher.toJson()).eq('id', teacher.id);
-    final index = _teachers.indexWhere((t) => t.id == teacher.id);
-    if (index != -1) {
-      _teachers[index] = teacher;
+    
+    final response = await _handleNetworkCall(
+      () => _supabase.from('teachers').insert(teacherInsert).select().single(),
+      'aggiunta insegnante'
+    );
+    
+    if (response != null) {
+      _teachers.add(Teacher.fromJson(response));
       notifyListeners();
+      return true;
     }
+    return false;
   }
 
-  Future<void> deleteTeacher(String id) async {
-    await _supabase.from('teachers').delete().eq('id', id);
-    _teachers.removeWhere((t) => t.id == id);
-    notifyListeners();
+  Future<bool> updateTeacher(Teacher teacher) async {
+    final result = await _handleNetworkCall(
+      () => _supabase.from('teachers').update(teacher.toJson()).eq('id', teacher.id),
+      'aggiornamento insegnante'
+    );
+    
+    if (result != null) {
+      final index = _teachers.indexWhere((t) => t.id == teacher.id);
+      if (index != -1) {
+        _teachers[index] = teacher;
+        notifyListeners();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  Future<bool> deleteTeacher(String id) async {
+    final result = await _handleNetworkCall(
+      () => _supabase.from('teachers').delete().eq('id', id),
+      'eliminazione insegnante'
+    );
+    
+    if (result != null) {
+      _teachers.removeWhere((t) => t.id == id);
+      notifyListeners();
+      return true;
+    }
+    return false;
   }
 
   // Similar methods for subjects, classes, etc.
 
   Future<void> fetchSubjects() async {
-    final response = await _supabase.from('subjects').select();
-    _subjects = response.map((json) => Subject.fromJson(json)).toList();
-    notifyListeners();
+    final response = await _handleNetworkCall(
+      () => _supabase.from('subjects').select(),
+      'caricamento materie'
+    );
+    
+    if (response != null) {
+      _subjects = response.map((json) => Subject.fromJson(json)).toList();
+      notifyListeners();
+    }
   }
 
-  Future<void> addSubject(Subject subject) async {
+  Future<bool> addSubject(Subject subject) async {
     // Create JSON without id for new records (let Supabase generate UUID)
     final subjectInsert = {
       'name': subject.name,
@@ -98,35 +181,66 @@ class DataProvider with ChangeNotifier {
       'created_at': subject.createdAt.toIso8601String(),
       'updated_at': subject.updatedAt.toIso8601String(),
     };
-    final response = await _supabase.from('subjects').insert(subjectInsert).select().single();
-    _subjects.add(Subject.fromJson(response));
-    notifyListeners();
-  }
-
-  Future<void> updateSubject(Subject subject) async {
-    await _supabase.from('subjects').update(subject.toJson()).eq('id', subject.id);
-    final index = _subjects.indexWhere((s) => s.id == subject.id);
-    if (index != -1) {
-      _subjects[index] = subject;
+    
+    final response = await _handleNetworkCall(
+      () => _supabase.from('subjects').insert(subjectInsert).select().single(),
+      'aggiunta materia'
+    );
+    
+    if (response != null) {
+      _subjects.add(Subject.fromJson(response));
       notifyListeners();
+      return true;
     }
+    return false;
   }
 
-  Future<void> deleteSubject(String id) async {
-    await _supabase.from('subjects').delete().eq('id', id);
-    _subjects.removeWhere((s) => s.id == id);
-    notifyListeners();
+  Future<bool> updateSubject(Subject subject) async {
+    final result = await _handleNetworkCall(
+      () => _supabase.from('subjects').update(subject.toJson()).eq('id', subject.id),
+      'aggiornamento materia'
+    );
+    
+    if (result != null) {
+      final index = _subjects.indexWhere((s) => s.id == subject.id);
+      if (index != -1) {
+        _subjects[index] = subject;
+        notifyListeners();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  Future<bool> deleteSubject(String id) async {
+    final result = await _handleNetworkCall(
+      () => _supabase.from('subjects').delete().eq('id', id),
+      'eliminazione materia'
+    );
+    
+    if (result != null) {
+      _subjects.removeWhere((s) => s.id == id);
+      notifyListeners();
+      return true;
+    }
+    return false;
   }
 
   // Add similar for classes, schedules, etc.
 
   Future<void> fetchClasses() async {
-    final response = await _supabase.from('classes').select();
-    _classes = response.map((json) => ClassModel.fromJson(json)).toList();
-    notifyListeners();
+    final response = await _handleNetworkCall(
+      () => _supabase.from('classes').select(),
+      'caricamento classi'
+    );
+    
+    if (response != null) {
+      _classes = response.map((json) => ClassModel.fromJson(json)).toList();
+      notifyListeners();
+    }
   }
 
-  Future<void> addClass(ClassModel classModel) async {
+  Future<bool> addClass(ClassModel classModel) async {
     // Create JSON without id for new records (let Supabase generate UUID)
     final classInsert = {
       'name': classModel.name,
@@ -135,32 +249,63 @@ class DataProvider with ChangeNotifier {
       'created_at': classModel.createdAt.toIso8601String(),
       'updated_at': classModel.updatedAt.toIso8601String(),
     };
-    final response = await _supabase.from('classes').insert(classInsert).select().single();
-    _classes.add(ClassModel.fromJson(response));
-    notifyListeners();
-  }
-
-  Future<void> updateClass(ClassModel classModel) async {
-    await _supabase.from('classes').update(classModel.toJson()).eq('id', classModel.id);
-    final index = _classes.indexWhere((c) => c.id == classModel.id);
-    if (index != -1) {
-      _classes[index] = classModel;
+    
+    final response = await _handleNetworkCall(
+      () => _supabase.from('classes').insert(classInsert).select().single(),
+      'aggiunta classe'
+    );
+    
+    if (response != null) {
+      _classes.add(ClassModel.fromJson(response));
       notifyListeners();
+      return true;
     }
+    return false;
   }
 
-  Future<void> deleteClass(String id) async {
-    await _supabase.from('classes').delete().eq('id', id);
-    _classes.removeWhere((c) => c.id == id);
-    notifyListeners();
+  Future<bool> updateClass(ClassModel classModel) async {
+    final result = await _handleNetworkCall(
+      () => _supabase.from('classes').update(classModel.toJson()).eq('id', classModel.id),
+      'aggiornamento classe'
+    );
+    
+    if (result != null) {
+      final index = _classes.indexWhere((c) => c.id == classModel.id);
+      if (index != -1) {
+        _classes[index] = classModel;
+        notifyListeners();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  Future<bool> deleteClass(String id) async {
+    final result = await _handleNetworkCall(
+      () => _supabase.from('classes').delete().eq('id', id),
+      'eliminazione classe'
+    );
+    
+    if (result != null) {
+      _classes.removeWhere((c) => c.id == id);
+      notifyListeners();
+      return true;
+    }
+    return false;
   }
 
   // For schedules and slots, similar.
 
   Future<void> fetchSchedules() async {
-    final response = await _supabase.from('schedules').select();
-    _schedules = response.map((json) => Schedule.fromJson(json)).toList();
-    notifyListeners();
+    final response = await _handleNetworkCall(
+      () => _supabase.from('schedules').select(),
+      'caricamento orari'
+    );
+    
+    if (response != null) {
+      _schedules = response.map((json) => Schedule.fromJson(json)).toList();
+      notifyListeners();
+    }
   }
 
   Future<void> fetchScheduleSlots(String scheduleId) async {
@@ -170,34 +315,62 @@ class DataProvider with ChangeNotifier {
       if (_schedules.isNotEmpty) {
         // Get the most recent schedule
         final latestSchedule = _schedules.reduce((a, b) => a.createdAt.isAfter(b.createdAt) ? a : b);
-        final response = await _supabase.from('schedule_slots').select().eq('schedule_id', latestSchedule.id);
-        _scheduleSlots = response.map((json) => ScheduleSlot.fromJson(json)).toList();
+        final response = await _handleNetworkCall(
+          () => _supabase.from('schedule_slots').select().eq('schedule_id', latestSchedule.id),
+          'caricamento slot orario'
+        );
+        
+        if (response != null) {
+          _scheduleSlots = response.map((json) => ScheduleSlot.fromJson(json)).toList();
+        } else {
+          _scheduleSlots = [];
+        }
       } else {
         _scheduleSlots = [];
       }
     } else {
       // Fetch slots for specific schedule
-      final response = await _supabase.from('schedule_slots').select().eq('schedule_id', scheduleId);
-      _scheduleSlots = response.map((json) => ScheduleSlot.fromJson(json)).toList();
+      final response = await _handleNetworkCall(
+        () => _supabase.from('schedule_slots').select().eq('schedule_id', scheduleId),
+        'caricamento slot orario specifico'
+      );
+      
+      if (response != null) {
+        _scheduleSlots = response.map((json) => ScheduleSlot.fromJson(json)).toList();
+      } else {
+        _scheduleSlots = [];
+      }
     }
-  // Loading from backend means we have a clean state
-  _isScheduleDirty = false;
-  notifyListeners();
+    // Loading from backend means we have a clean state
+    _isScheduleDirty = false;
+    notifyListeners();
   }
 
   Future<void> fetchTeacherConstraints() async {
-    final response = await _supabase.from('teacher_constraints').select();
-    _teacherConstraints = response.map((json) => TeacherConstraint.fromJson(json)).toList();
-    notifyListeners();
+    final response = await _handleNetworkCall(
+      () => _supabase.from('teacher_constraints').select(),
+      'caricamento vincoli insegnanti'
+    );
+    
+    if (response != null) {
+      _teacherConstraints = response.map((json) => TeacherConstraint.fromJson(json)).toList();
+      notifyListeners();
+    }
   }
 
   Future<void> fetchTeacherSubjects() async {
-    final response = await _supabase.from('teacher_subjects').select();
-    _teacherSubjects = response.map((json) => TeacherSubject.fromJson(json)).toList();
-    notifyListeners();
+    final response = await _handleNetworkCall(
+      () => _supabase.from('teacher_subjects').select(),
+      'caricamento materie insegnanti'
+    );
+    
+    if (response != null) {
+      _teacherSubjects = response.map((json) => TeacherSubject.fromJson(json)).toList();
+      notifyListeners();
+    }
   }
 
-  Future<void> addTeacherConstraint(TeacherConstraint constraint) async {
+  Future<bool> addTeacherConstraint(TeacherConstraint constraint) async {
     // Create JSON without id for new records (let Supabase generate UUID)
     final constraintInsert = {
       'teacher_id': constraint.teacherId,
@@ -205,18 +378,35 @@ class DataProvider with ChangeNotifier {
       'hour_slot': constraint.hourSlot,
       'created_at': constraint.createdAt.toIso8601String(),
     };
-    final response = await _supabase.from('teacher_constraints').insert(constraintInsert).select().single();
-    _teacherConstraints.add(TeacherConstraint.fromJson(response));
-    notifyListeners();
+    
+    final response = await _handleNetworkCall(
+      () => _supabase.from('teacher_constraints').insert(constraintInsert).select().single(),
+      'aggiunta vincolo insegnante'
+    );
+    
+    if (response != null) {
+      _teacherConstraints.add(TeacherConstraint.fromJson(response));
+      notifyListeners();
+      return true;
+    }
+    return false;
   }
 
-  Future<void> deleteTeacherConstraint(String id) async {
-    await _supabase.from('teacher_constraints').delete().eq('id', id);
-    _teacherConstraints.removeWhere((c) => c.id == id);
-    notifyListeners();
+  Future<bool> deleteTeacherConstraint(String id) async {
+    final result = await _handleNetworkCall(
+      () => _supabase.from('teacher_constraints').delete().eq('id', id),
+      'eliminazione vincolo insegnante'
+    );
+    
+    if (result != null) {
+      _teacherConstraints.removeWhere((c) => c.id == id);
+      notifyListeners();
+      return true;
+    }
+    return false;
   }
 
-  Future<void> addTeacherSubject(TeacherSubject teacherSubject) async {
+  Future<bool> addTeacherSubject(TeacherSubject teacherSubject) async {
     // Create JSON without id for new records (let Supabase generate UUID)
     final teacherSubjectInsert = {
       'teacher_id': teacherSubject.teacherId,
@@ -224,15 +414,32 @@ class DataProvider with ChangeNotifier {
       'class_id': teacherSubject.classId,
       'created_at': teacherSubject.createdAt.toIso8601String(),
     };
-    final response = await _supabase.from('teacher_subjects').insert(teacherSubjectInsert).select().single();
-    _teacherSubjects.add(TeacherSubject.fromJson(response));
-    notifyListeners();
+    
+    final response = await _handleNetworkCall(
+      () => _supabase.from('teacher_subjects').insert(teacherSubjectInsert).select().single(),
+      'aggiunta materia insegnante'
+    );
+    
+    if (response != null) {
+      _teacherSubjects.add(TeacherSubject.fromJson(response));
+      notifyListeners();
+      return true;
+    }
+    return false;
   }
 
-  Future<void> deleteTeacherSubject(String id) async {
-    await _supabase.from('teacher_subjects').delete().eq('id', id);
-    _teacherSubjects.removeWhere((ts) => ts.id == id);
-    notifyListeners();
+  Future<bool> deleteTeacherSubject(String id) async {
+    final result = await _handleNetworkCall(
+      () => _supabase.from('teacher_subjects').delete().eq('id', id),
+      'eliminazione materia insegnante'
+    );
+    
+    if (result != null) {
+      _teacherSubjects.removeWhere((ts) => ts.id == id);
+      notifyListeners();
+      return true;
+    }
+    return false;
   }
 
   Future<void> generateScheduleForClass(String classId) async {
@@ -258,7 +465,7 @@ class DataProvider with ChangeNotifier {
       await fetchTeachers();
 
       // 3. Generate schedule slots using intelligent algorithm scoped to this class
-      final List<ScheduleSlot> generatedSlots = _generateIntelligentSchedule(
+      final List<ScheduleSlot> generatedSlots = await _generateIntelligentSchedule(
         scheduleId: newSchedule.id,
         classId: classId,
       );
@@ -287,10 +494,10 @@ class DataProvider with ChangeNotifier {
     }
   }
 
-  List<ScheduleSlot> _generateIntelligentSchedule({
+  Future<List<ScheduleSlot>> _generateIntelligentSchedule({
     required String scheduleId,
     required String classId,
-  }) {
+  }) async {
     final List<ScheduleSlot> slots = [];
     final Map<String, int> teacherHoursPerWeek = _teacherWeeklyHours; // shared across classes
     final Map<String, Set<String>> teacherBlockedSlots = {};
@@ -365,6 +572,10 @@ class DataProvider with ChangeNotifier {
       final subj = subjectById[ts.subjectId];
       if (subj == null) continue;
       int remaining = subj.weeklyHours;
+      
+      // Yield to UI thread occasionally during heavy computation
+      await Future.delayed(Duration.zero);
+      
       // Try to place hours, favor consecutive blocks if requested
       for (int day = 1; day <= 5 && remaining > 0; day++) {
   if (subj.preferConsecutive && remaining > 1) {
@@ -413,26 +624,162 @@ class DataProvider with ChangeNotifier {
     return slots;
   }
 
-  Future<void> clearAllSchedules() async {
-    try {
-  // Delete all schedule slots (PostgREST requires a filter)
-  // Use a safe filter that matches all rows: id IS NOT NULL
-  await _supabase.from('schedule_slots').delete().not('id', 'is', null);
-      _scheduleSlots.clear();
+  List<ScheduleSlot> _distributeInstituteExtraHours({
+    required String scheduleId,
+  }) {
+    final List<ScheduleSlot> extraSlots = [];
+    
+    // Create a list of teachers who have extra hours to distribute
+    final List<Teacher> teachersWithExtraHours = _teachers
+        .where((teacher) => teacher.extraHours > 0)
+        .toList();
+
+    if (teachersWithExtraHours.isEmpty) return extraSlots;
+
+    // Initialize teacher constraints
+    final Map<String, Set<String>> teacherBlockedSlots = {};
+    for (final constraint in _teacherConstraints) {
+      final slotKey = '${constraint.dayOfWeek}-${constraint.hourSlot}';
+      teacherBlockedSlots.putIfAbsent(constraint.teacherId, () => <String>{}).add(slotKey);
+    }
+
+    // Shuffle for fair distribution
+    teachersWithExtraHours.shuffle();
+
+    for (final teacher in teachersWithExtraHours) {
+      int extraHoursToPlace = teacher.extraHours;
+      final currentWeeklyHours = _teacherWeeklyHours[teacher.id] ?? 0;
+
+      // The teacher should not exceed their normal weekly commitment (18 hours) + extra hours
+      final maxTotalHours = 18 + teacher.extraHours;
+      final remainingCapacity = maxTotalHours - currentWeeklyHours;
       
-  // Delete all schedules
-  await _supabase.from('schedules').delete().not('id', 'is', null);
-      _schedules.clear();
-  // Clearing server state resets local dirty flag
-  _isScheduleDirty = false;
-  notifyListeners();
-    } catch (e) {
-      print('Error clearing all schedules: $e');
-      rethrow;
+      // Only place the actual extra hours they have, not more
+      extraHoursToPlace = extraHoursToPlace.clamp(0, remainingCapacity.clamp(0, teacher.extraHours));
+
+      // Try to place extra hours across the week
+      for (int day = 1; day <= 5 && extraHoursToPlace > 0; day++) {
+        for (int hour = 1; hour <= 6 && extraHoursToPlace > 0; hour++) {
+          if (_canPlaceInstituteExtraHour(
+            teacherId: teacher.id,
+            day: day,
+            hour: hour,
+            teacherBlockedSlots: teacherBlockedSlots,
+          )) {
+            // Place the extra hour - use "Extra" class for extra hours
+            final extraSlot = ScheduleSlot(
+              id: '',
+              scheduleId: scheduleId,
+              teacherId: teacher.id,
+              subjectId: _getOrCreateSupportSubjectId(), // Special subject for extra hours
+              classId: _getOrCreateExtraClassId(), // Special "Extra" class for extra hours
+              dayOfWeek: day,
+              hourSlot: hour,
+              createdAt: DateTime.now(),
+            );
+
+            extraSlots.add(extraSlot);
+            _teacherBusySlots.putIfAbsent(teacher.id, () => <String>{}).add('$day-$hour');
+            _teacherWeeklyHours[teacher.id] = (_teacherWeeklyHours[teacher.id] ?? 0) + 1;
+            extraHoursToPlace--;
+          }
+        }
+      }
+    }
+    
+    return extraSlots;
+  }
+
+  bool _canPlaceInstituteExtraHour({
+    required String teacherId,
+    required int day,
+    required int hour,
+    required Map<String, Set<String>> teacherBlockedSlots,
+  }) {
+    final key = '$day-$hour';
+    
+    // Check if the teacher is already busy at this time (institute-wide)
+    if (_teacherBusySlots[teacherId]?.contains(key) ?? false) return false;
+    
+    // Check teacher constraints (blocked slots)
+    if (teacherBlockedSlots[teacherId]?.contains(key) ?? false) return false;
+
+    // Additional check: ensure teacher doesn't exceed weekly limit
+    final currentWeeklyHours = _teacherWeeklyHours[teacherId] ?? 0;
+    final teacher = _teachers.firstWhere((t) => t.id == teacherId, orElse: () => throw Exception('Teacher not found'));
+    final maxAllowedHours = 18 + teacher.extraHours;
+    
+    if (currentWeeklyHours >= maxAllowedHours) return false;
+
+    return true;
+  }
+
+  String _getOrCreateSupportSubjectId() {
+    // Try to find an existing "Support" or "Extra" subject
+    try {
+      final existingSupport = _subjects.firstWhere((s) => 
+          s.name.toLowerCase().contains('support') || 
+          s.name.toLowerCase().contains('extra') ||
+          s.name.toLowerCase().contains('supplenza') ||
+          s.name.toLowerCase().contains('sostegno') ||
+          s.name.toLowerCase().contains('ora libera')
+      );
+      return existingSupport.id;
+    } catch (_) {
+      // If no support subject exists, use the first available subject as fallback
+      // In a real implementation, you might want to create a dedicated "Supplenza" subject
+      return _subjects.isNotEmpty ? _subjects.first.id : '';
     }
   }
 
+  // Helper method to create a support subject if needed (for future enhancement)
+  String _getOrCreateExtraClassId() {
+    // Try to find an existing "Extra" class
+    try {
+      final existingExtra = _classes.firstWhere((c) => 
+          c.name.toLowerCase() == 'extra' ||
+          c.name.toLowerCase().contains('extra') ||
+          c.name.toLowerCase().contains('supplenza')
+      );
+      return existingExtra.id;
+    } catch (_) {
+      // If no "Extra" class exists, use the first available class as fallback
+      // In a real implementation, you might want to create a dedicated "Extra" class
+      return _classes.isNotEmpty ? _classes.first.id : '';
+    }
+  }
+
+  Future<bool> clearAllSchedules() async {
+    // Delete all schedule slots first
+    final slotsResult = await _handleNetworkCall(
+      () => _supabase.from('schedule_slots').delete().not('id', 'is', null),
+      'cancellazione slot orario'
+    );
+    
+    if (slotsResult == null) return false;
+    
+    // Delete all schedules
+    final schedulesResult = await _handleNetworkCall(
+      () => _supabase.from('schedules').delete().not('id', 'is', null),
+      'cancellazione orari'
+    );
+    
+    if (schedulesResult != null) {
+      _scheduleSlots.clear();
+      _schedules.clear();
+      // Clearing server state resets local dirty flag
+      _isScheduleDirty = false;
+      notifyListeners();
+      return true;
+    }
+    return false;
+  }
+
   Future<String> generateInstituteSchedule() async {
+    return generateInstituteScheduleWithProgress(null);
+  }
+
+  Future<String> generateInstituteScheduleWithProgress(Function(double)? onProgress) async {
     try {
       // Fetch all necessary data
   await fetchClasses();
@@ -444,6 +791,8 @@ class DataProvider with ChangeNotifier {
   // Reset institute-wide busy maps
   _teacherBusySlots.clear();
   _teacherWeeklyHours.clear();
+
+  if (onProgress != null) onProgress(0.1); // 10% progress
 
       // Create a NEW schedule for the institute every time
       final now = DateTime.now();
@@ -463,9 +812,22 @@ class DataProvider with ChangeNotifier {
       await _supabase.from('schedule_slots').delete().eq('schedule_id', masterSchedule.id);
       _scheduleSlots.removeWhere((slot) => slot.scheduleId == masterSchedule.id);
 
+  if (onProgress != null) onProgress(0.2); // 20% progress
+
       // Generate schedule for each class and associate with the NEW schedule
-      for (final classModel in _classes) {
-        final List<ScheduleSlot> generatedSlots = _generateIntelligentSchedule(
+      final totalClasses = _classes.length;
+      for (int i = 0; i < _classes.length; i++) {
+        final classModel = _classes[i];
+        
+        // Yield to UI thread periodically
+        if (i % 2 == 0) {
+          await Future.delayed(Duration(milliseconds: 10));
+          if (onProgress != null) {
+            onProgress(0.2 + (i / totalClasses) * 0.6); // 20% to 80% for class generation
+          }
+        }
+        
+        final List<ScheduleSlot> generatedSlots = await _generateIntelligentSchedule(
           scheduleId: masterSchedule.id,
           classId: classModel.id,
         );
@@ -486,6 +848,30 @@ class DataProvider with ChangeNotifier {
         }
       }
       
+  if (onProgress != null) onProgress(0.85); // 85% progress
+  
+      // AFTER all regular class schedules are generated, distribute extra hours ONCE
+      final List<ScheduleSlot> extraHoursSlots = _distributeInstituteExtraHours(
+        scheduleId: masterSchedule.id,
+      );
+      
+      // Save extra hours slots to database
+      for (final slot in extraHoursSlots) {
+        final slotInsert = {
+          'schedule_id': slot.scheduleId,
+          'teacher_id': slot.teacherId,
+          'subject_id': slot.subjectId,
+          'class_id': slot.classId,
+          'day_of_week': slot.dayOfWeek,
+          'hour_slot': slot.hourSlot,
+          'created_at': slot.createdAt.toIso8601String(),
+        };
+        final slotResponse = await _supabase.from('schedule_slots').insert(slotInsert).select().single();
+        _scheduleSlots.add(ScheduleSlot.fromJson(slotResponse));
+      }
+      
+  if (onProgress != null) onProgress(1.0); // 100% progress
+  
   // Newly generated schedule was saved to DB -> clean
   _isScheduleDirty = false;
   notifyListeners();

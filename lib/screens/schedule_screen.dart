@@ -19,6 +19,7 @@ class ScheduleScreen extends StatefulWidget {
 class _ScheduleScreenState extends State<ScheduleScreen> {
   late DataProvider _dataProvider;
   bool _showSchedulesList = false;
+  bool _isGeneratingSchedule = false;
   String? _currentScheduleId;
   String _scheduleName = 'Orario Attuale';
   final TextEditingController _scheduleNameController = TextEditingController();
@@ -98,13 +99,22 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                           ),
                           if (!_showSchedulesList) ...[
                             IconButton(
-                              icon: const Icon(Icons.refresh, color: Colors.white),
-                              tooltip: 'Genera Orario',
-                              onPressed: () => _generateSchedule(),
+                              icon: _isGeneratingSchedule 
+                                ? SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                    ),
+                                  )
+                                : const Icon(Icons.refresh, color: Colors.white),
+                              tooltip: _isGeneratingSchedule ? 'Generando...' : 'Genera Orario',
+                              onPressed: _isGeneratingSchedule ? null : () => _generateSchedule(),
                             ),
                             IconButton(
                               icon: const Icon(Icons.delete_sweep, color: Colors.white),
-                              tooltip: 'Pulisci Orario',
+                              tooltip: 'Elimina Orario',
                               onPressed: () => _clearSchedule(),
                             ),
                             IconButton(
@@ -490,8 +500,33 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
 
     if (confirmed != true) return;
 
+    // Start loading state
+    setState(() {
+      _isGeneratingSchedule = true;
+    });
+
     try {
-      final scheduleId = await _dataProvider.generateInstituteSchedule();
+      // Show immediate feedback
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              SizedBox(width: 16),
+              Text('Generazione orario in corso...'),
+            ],
+          ),
+          duration: Duration(seconds: 2),
+        ),
+      );
+
+      // Run the heavy computation in a separate isolate to prevent UI blocking
+      final scheduleId = await _generateScheduleInBackground();
+      
       await _dataProvider.fetchSchedules(); // Refresh schedules
       final currentSchedule = _dataProvider.getCurrentSchedule();
       
@@ -502,7 +537,9 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
           _scheduleNameController.text = _scheduleName;
         }
       });
+      
       await _dataProvider.fetchScheduleSlots(scheduleId);
+      
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Orario generato con successo!')),
@@ -512,22 +549,37 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Errore durante la generazione: $e')),
       );
+    } finally {
+      // Stop loading state
+      if (mounted) {
+        setState(() {
+          _isGeneratingSchedule = false;
+        });
+      }
     }
   }
 
-  // Clear schedule method
+  Future<String> _generateScheduleInBackground() async {
+    // Use the progress-enabled method with yielding points
+    return await _dataProvider.generateInstituteScheduleWithProgress((progress) {
+      // Could show progress in the future, for now just ensure UI responsiveness
+      print('Schedule generation progress: ${(progress * 100).toInt()}%');
+    });
+  }
+
+  // Delete schedule method
   Future<void> _clearSchedule() async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Pulisci Orario'),
+        title: const Text('Elimina Orario'),
         content: const Text('Questo rimuoverà tutti gli slot dell\'orario. Continuare?'),
         actions: [
           TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Annulla')),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Pulisci'),
+            child: const Text('Elimina'),
           ),
         ],
       ),
@@ -545,12 +597,12 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       });
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Orario pulito con successo!')),
+        const SnackBar(content: Text('Orario eliminato con successo!')),
       );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Errore durante la pulizia: $e')),
+        SnackBar(content: Text('Errore durante l\'eliminazione: $e')),
       );
     }
   }
@@ -589,17 +641,70 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
 
   // Export to PDF method
   Future<void> _exportToPDF(DataProvider dataProvider) async {
-    if (dataProvider.teachers.isEmpty) {
+    // Check if we have the necessary data, try to reload if missing
+    if (dataProvider.teachers.isEmpty || dataProvider.classes.isEmpty || dataProvider.scheduleSlots.isEmpty) {
+      // Show loading indicator
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Nessun dato da esportare')),
+        const SnackBar(
+          content: Text('Caricamento dati in corso...'),
+          duration: Duration(seconds: 2),
+        ),
       );
-      return;
+      
+      try {
+        // Try to reload missing data
+        if (dataProvider.teachers.isEmpty) {
+          await dataProvider.fetchTeachers();
+        }
+        if (dataProvider.classes.isEmpty) {
+          await dataProvider.fetchClasses();
+        }
+        if (dataProvider.teacherConstraints.isEmpty) {
+          await dataProvider.fetchTeacherConstraints();
+        }
+        if (dataProvider.scheduleSlots.isEmpty && _currentScheduleId != null) {
+          await dataProvider.fetchScheduleSlots(_currentScheduleId!);
+        }
+        
+        // Check again after trying to reload
+        if (dataProvider.teachers.isEmpty || dataProvider.classes.isEmpty || dataProvider.scheduleSlots.isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                !dataProvider.isOnline ? 
+                'Server offline: ${dataProvider.lastError ?? "Impossibile connettersi"}' :
+                dataProvider.teachers.isEmpty ? 'Nessun insegnante trovato nel database' :
+                dataProvider.classes.isEmpty ? 'Nessuna classe trovata nel database' :
+                'Nessun orario generato da esportare'
+              ),
+              backgroundColor: Colors.red,
+              duration: const Duration(seconds: 4),
+            ),
+          );
+          return;
+        }
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Errore durante il caricamento dei dati: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+        return;
+      }
     }
 
     try {
       final pdf = pw.Document();
+      String sanitize(String s, {int maxLen = 60}) {
+        var out = s.replaceAll(RegExp(r'[\x00-\x1F]'), '');
+        out = out.replaceAll(RegExp(r'\s+'), ' ').trim();
+        if (out.isEmpty) return ' ';
+        if (out.length > maxLen) return out.substring(0, maxLen - 1);
+        return out;
+      }
       final days = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì'];
-      final hours = ['1', '2', '3', '4', '5', '6'];
 
       // Helper to find slot for a given teacher/day/hour
       ScheduleSlot? slotFor(String teacherId, int dayIndex, int hourIndex) {
@@ -612,54 +717,128 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
         }
       }
 
-      pdf.addPage(
-        pw.Page(
-          pageFormat: PdfPageFormat.a4.landscape,
-          build: (pw.Context context) {
-            return pw.Column(
-              children: [
+      // Use MultiPage to allow automatic pagination for large tables
+        // compute first column width based on longest name (including header)
+        final pageAvailable = PdfPageFormat.a4.landscape.availableWidth;
+        final maxNameLen = ([ 'Docente', ...dataProvider.teachers.map((t) => sanitize(t.name)) ]..removeWhere((s) => s.isEmpty)).fold<int>(0, (p, e) => e.length > p ? e.length : p);
+        final baseCharWidth = 5.6; // approximate width per character in points
+        final desiredFirstCol = (maxNameLen * baseCharWidth) + 16; // padding
+  final maxFirstCol = pageAvailable * 0.38; // don't use more than 38% of page width
+  double firstColWidth = desiredFirstCol > maxFirstCol ? maxFirstCol : desiredFirstCol;
+  // Ensure a sensible minimum so the header 'Docente' won't wrap
+  const hardMinFirstCol = 70.0;
+  final headerText = 'Docente';
+  final headerMin = (headerText.length * baseCharWidth) + 16;
+  final minFirstCol = headerMin > hardMinFirstCol ? headerMin : hardMinFirstCol;
+  if (firstColWidth < minFirstCol) firstColWidth = minFirstCol;
+        // compute teacher font size: shrink proportionally if needed
+        double teacherFontSize = 9.0;
+        if (desiredFirstCol > firstColWidth) {
+          final ratio = firstColWidth / desiredFirstCol;
+          teacherFontSize = (9.0 * ratio).clamp(6.0, 9.0);
+        }
+
+        pdf.addPage(
+          pw.MultiPage(
+            pageFormat: PdfPageFormat.a4.landscape,
+            build: (pw.Context ctx) {
+              return [
                 pw.Text(
-                  _scheduleName,
-                  style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold),
+                  sanitize(_scheduleName),
+                  style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
                 ),
-                pw.SizedBox(height: 20),
-                pw.Table(
-                  border: pw.TableBorder.all(),
+              pw.SizedBox(height: 12),
+              // Create header aligned to the table column widths
+              // First column is fixed (firstColWidth), the remaining width is shared
+              // equally among 30 slot columns; each day spans 6 of those columns so
+              // dayGroupWidth equals (pageAvailable - firstColWidth) / 5
+              pw.Container(
+                decoration: const pw.BoxDecoration(
+                  border: pw.Border(bottom: pw.BorderSide(color: PdfColors.grey300, width: 0.5)),
+                ),
+                child: pw.Row(
                   children: [
-                    // Header row
-                    pw.TableRow(
-                      children: [
-                        pw.Container(
-                          padding: const pw.EdgeInsets.all(8),
-                          child: pw.Text('Docente', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                        ),
-                        ...days.expand((day) => hours.map((hour) => 
-                          pw.Container(
-                            padding: const pw.EdgeInsets.all(4),
-                            child: pw.Column(
-                              children: [
-                                if (hour == '1') pw.Text(day, style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 8)),
-                                pw.Text(hour, style: const pw.TextStyle(fontSize: 10)),
-                              ],
-                            ),
-                          ),
-                        )).toList(),
-                      ],
+                    // Teacher column - fixed width to match table
+                    pw.Container(
+                      width: firstColWidth,
+                      padding: const pw.EdgeInsets.all(6),
+                      decoration: const pw.BoxDecoration(
+                        border: pw.Border(right: pw.BorderSide(color: PdfColors.grey300, width: 0.5)),
+                      ),
+                      alignment: pw.Alignment.center,
+                      child: pw.Text(
+                        'Docente',
+                        style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11),
+                        textAlign: pw.TextAlign.center,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: pw.TextOverflow.clip,
+                      ),
                     ),
-                    // Teacher rows
-                    ...dataProvider.teachers.map((teacher) {
-                      return pw.TableRow(
+                    // Day groups - compute width per day so it aligns with the 6 slot columns
+                    for (var d = 0; d < days.length; d++) pw.Container(
+                      width: (pageAvailable - firstColWidth) / 5,
+                      padding: const pw.EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+                      decoration: const pw.BoxDecoration(
+                        border: pw.Border(right: pw.BorderSide(color: PdfColors.grey300, width: 0.5)),
+                      ),
+                      child: pw.Column(
+                        mainAxisSize: pw.MainAxisSize.min,
                         children: [
                           pw.Container(
-                            padding: const pw.EdgeInsets.all(8),
-                            child: pw.Text(teacher.name, style: const pw.TextStyle(fontSize: 10)),
+                            alignment: pw.Alignment.center,
+                            padding: const pw.EdgeInsets.symmetric(vertical: 4),
+                            child: pw.Text(
+                              days[d],
+                              style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11),
+                              textAlign: pw.TextAlign.center,
+                              maxLines: 1,
+                              softWrap: false,
+                              overflow: pw.TextOverflow.clip,
+                            ),
                           ),
-                          ...days.expand((day) => hours.map((hour) {
-                            final dayIndex = days.indexOf(day) + 1;
-                            final hourIndex = hours.indexOf(hour) + 1;
+                          // Invisible row of 6 columns to draw the vertical separators so they align with the table
+                          pw.Container(
+                            height: 0.5,
+                            child: pw.Row(
+                              children: List.generate(6, (i) => pw.Expanded(
+                                child: pw.Container(
+                                  decoration: const pw.BoxDecoration(
+                                    border: pw.Border(right: pw.BorderSide(color: PdfColors.grey300, width: 0.5)),
+                                  ),
+                                ),
+                              )),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              pw.SizedBox(height: 6),
+              // Single large table: 1 'Docente' column + 30 slot columns (6 hours × 5 days)
+              pw.Table(
+                border: pw.TableBorder.all(color: PdfColors.grey300),
+                defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
+                columnWidths: <int, pw.TableColumnWidth>{
+                  0: pw.FixedColumnWidth(firstColWidth),
+                  for (int i = 1; i <= 30; i++) i: pw.FlexColumnWidth(1),
+                },
+                children: [
+                  // Rows per teacher
+                  for (final teacher in dataProvider.teachers)
+                    pw.TableRow(
+                      children: [
+                        pw.Container(padding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 6), alignment: pw.Alignment.center, child: pw.Text(sanitize(teacher.name, maxLen: 24), style: pw.TextStyle(fontSize: teacherFontSize, fontWeight: pw.FontWeight.bold), softWrap: false, overflow: pw.TextOverflow.clip)),
+                        // 30 slot cells
+                        for (var d = 0; d < days.length; d++) for (var h = 0; h < 6; h++)
+                          (() {
+                            final dayIndex = d + 1;
+                            final hourIndex = h + 1;
                             final slot = slotFor(teacher.id, dayIndex, hourIndex);
-                            
-                            String className = '';
+                            final hasConstraint = dataProvider.teacherConstraints.any((c) => c.teacherId == teacher.id && c.dayOfWeek == dayIndex && c.hourSlot == hourIndex);
+                            String className = ' ';
                             if (slot != null) {
                               try {
                                 final cls = dataProvider.classes.firstWhere((c) => c.id == slot.classId);
@@ -668,62 +847,160 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                                 className = 'N/A';
                               }
                             }
-                            
-                            return pw.Container(
-                              padding: const pw.EdgeInsets.all(4),
-                              child: pw.Text(className, style: const pw.TextStyle(fontSize: 8)),
-                            );
-                          })).toList(),
-                        ],
-                      );
-                    }).toList(),
-                  ],
-                ),
-              ],
-            );
+                            final safeClassName = sanitize(className, maxLen: 18);
+                            return pw.Container(padding: const pw.EdgeInsets.symmetric(horizontal: 3, vertical: 4), decoration: hasConstraint ? pw.BoxDecoration(color: PdfColor.fromInt(0xFFCCEEFF)) : pw.BoxDecoration(), alignment: pw.Alignment.center, child: pw.Text(safeClassName, style: pw.TextStyle(fontSize: 8), softWrap: false, overflow: pw.TextOverflow.clip));
+                          })(),
+                      ],
+                    ),
+                ],
+              ),
+            ];
           },
         ),
       );
 
-      // Get platform-appropriate directory
+      // Get platform-appropriate directory with better fallback handling
       Directory? directory;
       String directoryName = '';
       
       if (Platform.isAndroid) {
         try {
           directory = await getExternalStorageDirectory();
-          directoryName = 'Download Android';
+          directoryName = 'Storage Android';
         } catch (_) {
           directory = await getApplicationDocumentsDirectory();
           directoryName = 'App Documents';
         }
       } else {
-        // Linux, Windows, macOS
-        directory = await getDownloadsDirectory() ?? await getApplicationDocumentsDirectory();
-        directoryName = directory.path.contains('Downloads') ? 'Downloads' : 'Documents';
+        // Try Downloads first, then fallback to Documents, then App Documents
+        try {
+          directory = await getDownloadsDirectory();
+          if (directory != null && await directory.exists()) {
+            directoryName = 'Downloads';
+          } else {
+            throw Exception('Downloads directory not accessible');
+          }
+        } catch (_) {
+          try {
+            // Try user home Documents folder
+            final homeDir = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+            if (homeDir != null) {
+              directory = Directory('$homeDir/Documents');
+              if (await directory.exists()) {
+                directoryName = 'Documents';
+              } else {
+                throw Exception('Documents directory not accessible');
+              }
+            } else {
+              throw Exception('Home directory not found');
+            }
+          } catch (_) {
+            // Last fallback: app documents directory
+            directory = await getApplicationDocumentsDirectory();
+            directoryName = 'App Documents';
+          }
+        }
       }
       
       if (directory == null) {
-        throw Exception('Impossibile accedere alla directory di download');
+        throw Exception('Impossibile accedere a nessuna directory di salvataggio');
       }
       
-      final fileName = '${_scheduleName.replaceAll(' ', '_')}_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      // Ensure the directory exists
+      if (!await directory.exists()) {
+        await directory.create(recursive: true);
+      }
+      
+      final fileName = '${_scheduleName.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')}_${DateTime.now().millisecondsSinceEpoch}.pdf';
       final file = File('${directory.path}/$fileName');
       
-      // Create directory if it doesn't exist
-      await directory.create(recursive: true);
-      
-      // Save the PDF file
-      await file.writeAsBytes(await pdf.save());
+      // Save the PDF file (with fallback if pdf.save() fails due to layout NaN)
+      try {
+        await file.writeAsBytes(await pdf.save());
+      } catch (saveError) {
+        // Detect NaN/layout assertion errors and fall back to a simpler PDF format
+        final msg = saveError.toString();
+        if (msg.contains('isNaN') || msg.contains('num.dart') || msg.contains('NaN')) {
+          final fallbackPdf = pw.Document();
+          fallbackPdf.addPage(
+            pw.MultiPage(
+              pageFormat: PdfPageFormat.a4.landscape,
+              build: (pw.Context ctx) {
+                return [
+                  pw.Text('${sanitize(_scheduleName)} - Fallback export', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
+                  pw.SizedBox(height: 8),
+                  for (final teacher in dataProvider.teachers) pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text(sanitize(teacher.name), style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
+                      pw.SizedBox(height: 4),
+                      for (var d = 0; d < days.length; d++) pw.Row(children: [
+                        pw.Expanded(flex: 1, child: pw.Text(days[d], style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold))),
+                        pw.Expanded(
+                          flex: 4,
+                          child: pw.Text(
+                            // build classes for this teacher/day as comma-separated
+                            List.generate(6, (h) {
+                              final dayIndex = d + 1;
+                              final hourIndex = h + 1;
+                              ScheduleSlot? slot;
+                              try {
+                                slot = dataProvider.scheduleSlots.firstWhere((s) => s.teacherId == teacher.id && s.dayOfWeek == dayIndex && s.hourSlot == hourIndex);
+                              } catch (_) {
+                                slot = null;
+                              }
+                              if (slot == null) return ' - ';
+                              try {
+                                final cls = dataProvider.classes.firstWhere((c) => c.id == slot!.classId);
+                                final hasConstraint = dataProvider.teacherConstraints.any((c) => c.teacherId == teacher.id && c.dayOfWeek == dayIndex && c.hourSlot == hourIndex);
+                                return hasConstraint ? '${cls.name}*' : cls.name;
+                              } catch (_) {
+                                return 'N/A';
+                              }
+                            }).join(', '),
+                            style: pw.TextStyle(fontSize: 10),
+                          ),
+                        ),
+                      ])
+                    ],
+                  ),
+                ];
+              },
+            ),
+          );
+
+          final fallbackName = '${_scheduleName.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')}_${DateTime.now().millisecondsSinceEpoch}_fallback.pdf';
+          final fallbackFile = File('${directory.path}/$fallbackName');
+          await fallbackFile.writeAsBytes(await fallbackPdf.save());
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('PDF salvato (fallback) in $directoryName:\n$fallbackName'),
+              duration: const Duration(seconds: 6),
+            ),
+          );
+          return;
+        }
+
+        // If it's a different error, rethrow to be handled by outer catch
+        rethrow;
+      }
       
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('PDF salvato in $directoryName: $fileName'),
-          duration: const Duration(seconds: 4),
+          content: Text('PDF salvato in $directoryName:\n$fileName'),
+          duration: const Duration(seconds: 5),
           action: SnackBarAction(
-            label: 'OK',
-            onPressed: () {},
+            label: 'Percorso',
+            onPressed: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Percorso completo:\n${file.path}'),
+                  duration: const Duration(seconds: 8),
+                ),
+              );
+            },
           ),
         ),
       );
@@ -731,7 +1008,8 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Errore durante l\'export PDF: $e'),
+          content: Text('Errore durante l\'export PDF: $e\nDettagli: ${e.toString()}'),
+          duration: const Duration(seconds: 6),
           backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );

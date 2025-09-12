@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../providers/data_provider.dart';
 import '../models/teacher.dart';
 import '../models/teacher_subject.dart';
+import '../models/teacher_constraint.dart';
 
 class TeacherManagementScreen extends StatefulWidget {
   const TeacherManagementScreen({super.key});
@@ -77,7 +78,17 @@ class _TeacherManagementScreenState extends State<TeacherManagementScreen> {
                       ),
                     ),
                     title: Text(teacher.name),
-                    subtitle: Text(teacher.email ?? 'No email'),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(teacher.email ?? 'No email'),
+                        Text('Ore Extra: ${teacher.extraHours}', 
+                             style: TextStyle(
+                               color: Theme.of(context).colorScheme.primary,
+                               fontWeight: FontWeight.w500,
+                             )),
+                      ],
+                    ),
               trailing: PopupMenuButton(
                 itemBuilder: (context) => [
                   PopupMenuItem(
@@ -219,6 +230,7 @@ class _AddEditTeacherDialogState extends State<AddEditTeacherDialog> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
+  final _extraHoursController = TextEditingController();
 
   @override
   void initState() {
@@ -226,6 +238,9 @@ class _AddEditTeacherDialogState extends State<AddEditTeacherDialog> {
     if (widget.teacher != null) {
       _nameController.text = widget.teacher!.name;
       _emailController.text = widget.teacher!.email ?? '';
+      _extraHoursController.text = widget.teacher!.extraHours.toString();
+    } else {
+      _extraHoursController.text = '0';
     }
   }
 
@@ -268,6 +283,26 @@ class _AddEditTeacherDialogState extends State<AddEditTeacherDialog> {
                 return null;
               },
             ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _extraHoursController,
+              decoration: const InputDecoration(
+                labelText: 'Ore Extra',
+                border: OutlineInputBorder(),
+                hintText: '0',
+              ),
+              keyboardType: TextInputType.number,
+              validator: (value) {
+                if (value == null || value.isEmpty) {
+                  return 'Please enter extra hours';
+                }
+                final hours = int.tryParse(value);
+                if (hours == null || hours < 0) {
+                  return 'Please enter a valid number (0 or greater)';
+                }
+                return null;
+              },
+            ),
           ],
         ),
       ),
@@ -294,6 +329,7 @@ class _AddEditTeacherDialogState extends State<AddEditTeacherDialog> {
       email: _emailController.text.isEmpty ? null : _emailController.text,
       createdAt: widget.teacher?.createdAt ?? DateTime.now(),
       updatedAt: DateTime.now(),
+      extraHours: int.parse(_extraHoursController.text),
     );
 
     if (widget.teacher == null) {
@@ -319,6 +355,8 @@ class _TeacherConstraintsScreenState extends State<TeacherConstraintsScreen> {
   final List<String> days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
   final List<String> hours = ['1h', '2h', '3h', '4h', '5h', '6h'];
   Set<String> blockedSlots = {};
+  // Map of slotKey -> constraintId for existing persisted constraints for this teacher
+  final Map<String, String> _existingConstraintIds = {};
 
   @override
   void initState() {
@@ -327,8 +365,26 @@ class _TeacherConstraintsScreenState extends State<TeacherConstraintsScreen> {
   }
 
   void _loadConstraints() {
-    // Load existing constraints for this teacher
-    // Convert to blockedSlots format: "dayIndex-hourIndex"
+    // Load existing constraints for this teacher and populate blockedSlots
+    // Convert to blockedSlots format: "dayIndex-hourIndex" where indexes are 0-based
+    final dp = Provider.of<DataProvider>(context, listen: false);
+    // Ensure latest constraints are loaded from backend
+    dp.fetchTeacherConstraints().then((_) {
+      final constraints = dp.teacherConstraints.where((c) => c.teacherId == widget.teacher.id).toList();
+      final newBlocked = <String>{};
+      _existingConstraintIds.clear();
+      for (final c in constraints) {
+        final slotKey = '${c.dayOfWeek - 1}-${c.hourSlot - 1}';
+        newBlocked.add(slotKey);
+        _existingConstraintIds[slotKey] = c.id;
+      }
+      setState(() {
+        blockedSlots = newBlocked;
+      });
+    }).catchError((e) {
+      // If fetch fails, just leave blockedSlots empty and show a message
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Errore nel caricamento dei vincoli: $e')));
+    });
   }
 
   @override
@@ -428,11 +484,52 @@ class _TeacherConstraintsScreenState extends State<TeacherConstraintsScreen> {
   }
 
   void _saveConstraints() {
-    // Save constraints to database
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Constraints saved successfully')),
-    );
-    Navigator.pop(context);
+    // Save constraints to database: compute diffs between current blockedSlots and existing ones
+    final dp = Provider.of<DataProvider>(context, listen: false);
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Salvataggio vincoli...')));
+
+    () async {
+      try {
+        final currentKeys = blockedSlots;
+        final previousKeys = _existingConstraintIds.keys.toSet();
+
+        // To delete: present before, removed now
+        final toDelete = previousKeys.difference(currentKeys);
+        for (final key in toDelete) {
+          final id = _existingConstraintIds[key];
+          if (id != null && id.isNotEmpty) {
+            await dp.deleteTeacherConstraint(id);
+          }
+        }
+
+        // To add: newly blocked that didn't exist before
+        final toAdd = currentKeys.difference(previousKeys);
+        for (final key in toAdd) {
+          final parts = key.split('-');
+          if (parts.length != 2) continue;
+          final dayIndex = int.tryParse(parts[0]) ?? 0;
+          final hourIndex = int.tryParse(parts[1]) ?? 0;
+          final constraint = TeacherConstraint(
+            id: '',
+            teacherId: widget.teacher.id,
+            dayOfWeek: dayIndex + 1, // convert to 1-based
+            hourSlot: hourIndex + 1,
+            createdAt: DateTime.now(),
+          );
+          await dp.addTeacherConstraint(constraint);
+        }
+
+        // Refresh local cache from backend
+        await dp.fetchTeacherConstraints();
+
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Vincoli salvati con successo')));
+        Navigator.pop(context);
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Errore durante il salvataggio: $e')));
+      }
+    }();
   }
 }
 
