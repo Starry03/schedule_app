@@ -1,0 +1,741 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:path_provider/path_provider.dart';
+import 'dart:io';
+import '../providers/theme_provider.dart';
+import '../providers/data_provider.dart';
+import '../models/schedule_slot.dart';
+import '../models/schedule.dart';
+
+class ScheduleScreen extends StatefulWidget {
+  const ScheduleScreen({super.key});
+
+  @override
+  State<ScheduleScreen> createState() => _ScheduleScreenState();
+}
+
+class _ScheduleScreenState extends State<ScheduleScreen> {
+  late DataProvider _dataProvider;
+  bool _showSchedulesList = false;
+  String? _currentScheduleId;
+  String _scheduleName = 'Orario Attuale';
+  final TextEditingController _scheduleNameController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    // Use listen: false in initState
+    _dataProvider = Provider.of<DataProvider>(context, listen: false);
+    _dataProvider.fetchClasses();
+    _dataProvider.fetchSchedules().then((_) {
+      // After fetching schedules, get the current schedule name
+      final currentSchedule = _dataProvider.getCurrentSchedule();
+      if (currentSchedule != null) {
+        setState(() {
+          _scheduleName = currentSchedule.name;
+          _currentScheduleId = currentSchedule.id;
+          _scheduleNameController.text = _scheduleName;
+        });
+      }
+    });
+    _dataProvider.fetchTeachers();
+    // Fetch slots for currently selected schedule (empty -> latest/generated)
+    _dataProvider.fetchScheduleSlots('');
+  }
+
+  @override
+  void dispose() {
+    _scheduleNameController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _dataProvider = Provider.of<DataProvider>(context, listen: false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dataProvider = Provider.of<DataProvider>(context);
+
+    return Scaffold(
+      body: Column(
+        children: [
+          // Header
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: Provider.of<ThemeProvider>(context).primaryGradient,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        _showSchedulesList ? 'Orari Salvati' : 'Orario Attuale',
+                        style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
+                      ),
+                      Row(
+                        children: [
+                          IconButton(
+                            icon: Icon(_showSchedulesList ? Icons.schedule : Icons.folder, color: Colors.white),
+                            tooltip: _showSchedulesList ? 'Mostra Orario Attuale' : 'Mostra Orari Salvati',
+                            onPressed: () async {
+                              if (!_showSchedulesList) {
+                                // Loading saved schedules - refresh from database
+                                await _dataProvider.fetchSchedules();
+                              }
+                              setState(() => _showSchedulesList = !_showSchedulesList);
+                            },
+                          ),
+                          if (!_showSchedulesList) ...[
+                            IconButton(
+                              icon: const Icon(Icons.refresh, color: Colors.white),
+                              tooltip: 'Genera Orario',
+                              onPressed: () => _generateSchedule(),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete_sweep, color: Colors.white),
+                              tooltip: 'Pulisci Orario',
+                              onPressed: () => _clearSchedule(),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.picture_as_pdf, color: Colors.white),
+                              tooltip: 'Esporta PDF',
+                              onPressed: () => _exportToPDF(dataProvider),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ],
+                  ),
+                  if (_currentScheduleId != null) ...[
+                    const SizedBox(height: 8),
+                    Text('Schedule ID: $_currentScheduleId', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.white.withOpacity(0.85))),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          // Schedule Name Input (only when not showing list)
+          if (!_showSchedulesList) 
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Theme.of(context).colorScheme.outline.withOpacity(0.3),
+                        ),
+                      ),
+                      child: TextField(
+                        controller: _scheduleNameController,
+                        style: Theme.of(context).textTheme.titleMedium,
+                        decoration: InputDecoration(
+                          hintText: 'Nome orario...',
+                          prefixIcon: Icon(
+                            Icons.edit,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                          border: InputBorder.none,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                        ),
+                        onChanged: (value) {
+                          setState(() {
+                            _scheduleName = value.isNotEmpty ? value : 'Orario Attuale';
+                          });
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton.icon(
+                    onPressed: _currentScheduleId != null 
+                      ? () => _updateScheduleName(_scheduleNameController.text)
+                      : null,
+                    icon: const Icon(Icons.save, size: 18),
+                    label: const Text('Salva'),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 16),
+          // Content
+          Expanded(child: _showSchedulesList ? _buildSchedulesList(dataProvider) : _buildScheduleGrid(dataProvider)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildScheduleGrid(DataProvider dataProvider) {
+    // Build a grid with teachers on rows, days/hours on columns
+    final days = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì'];
+    final hours = ['1', '2', '3', '4', '5', '6'];
+
+    // If no teachers loaded yet
+    if (dataProvider.teachers.isEmpty) {
+      return const Center(child: Text('Nessun docente disponibile per generare la griglia'));
+    }
+
+    // Helper to find slot for a given teacher/day/hour
+    ScheduleSlot? slotFor(String teacherId, int dayIndex, int hourIndex) {
+      try {
+        return dataProvider.scheduleSlots.firstWhere((s) => s.teacherId == teacherId && s.dayOfWeek == dayIndex && s.hourSlot == hourIndex);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    // Calculate total columns: 1 (teacher) + days * hours
+
+    // Create table rows with single header row
+    final List<TableRow> rows = [];
+
+    // Single header row: Teacher column + Day-Hour combinations
+    final List<Widget> headerCells = [
+      Container(
+        height: 60,
+        padding: const EdgeInsets.all(8),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.primary,
+        ),
+        child: const Text(
+          'Docente',
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 14,
+            color: Colors.white,
+          ),
+        ),
+      ),
+    ];
+
+    for (var d = 0; d < days.length; d++) {
+      for (var h = 0; h < hours.length; h++) {
+        headerCells.add(
+          Container(
+            height: 60,
+            padding: const EdgeInsets.all(4),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainer,
+              border: Border.all(
+                color: Theme.of(context).colorScheme.outline.withOpacity(0.3),
+              ),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (h == 0) Text(
+                  days[d],
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 11,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                Text(
+                  hours[h],
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+    }
+
+    rows.add(TableRow(children: headerCells));
+
+    // Rows for each teacher
+    for (final teacher in dataProvider.teachers) {
+      final List<Widget> cells = [];
+      
+      // Teacher name cell
+      cells.add(Container(
+        height: 50,
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          border: Border.all(
+            color: Theme.of(context).colorScheme.outline.withOpacity(0.3),
+          ),
+        ),
+        child: Center(
+          child: Text(
+            teacher.name, 
+            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      ));
+
+      // Add cells for each day/hour combination
+      for (var d = 0; d < days.length; d++) {
+        final dayIndex = d + 1;
+        
+        for (var h = 0; h < hours.length; h++) {
+          final hourIndex = h + 1;
+          final slot = slotFor(teacher.id, dayIndex, hourIndex);
+
+          Widget cellContent;
+          if (slot == null) {
+            cellContent = const SizedBox(height: 50);
+          } else {
+            // Find class safely
+            dynamic cls;
+            try {
+              cls = dataProvider.classes.firstWhere((c) => c.id == slot.classId);
+            } catch (_) {
+              cls = null;
+            }
+            final className = cls != null ? cls.name : 'N/A';
+            cellContent = Container(
+              height: 50,
+              alignment: Alignment.center,
+              padding: const EdgeInsets.all(4),
+              child: Text(
+                className, 
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
+              ),
+            );
+          }
+
+          cells.add(Container(
+            decoration: BoxDecoration(
+              color: slot == null 
+                ? Theme.of(context).cardColor 
+                : Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3),
+              border: Border.all(
+                color: Theme.of(context).colorScheme.outline.withOpacity(0.3), 
+                width: 0.5,
+              ),
+            ),
+            child: cellContent,
+          ));
+        }
+      }
+
+      rows.add(TableRow(children: cells));
+    }
+
+    // Wrap table in horizontal + vertical scroll views
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: SingleChildScrollView(
+          child: Table(
+            defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+            columnWidths: {
+              0: const FixedColumnWidth(120), // Teacher column
+              for (var i = 1; i < 1 + (days.length * hours.length); i++) 
+                i: const FixedColumnWidth(80),
+            },
+            children: rows,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSchedulesList(DataProvider dataProvider) {
+    final savedSchedules = dataProvider.getSavedSchedules();
+
+    if (savedSchedules.isEmpty) {
+      return const Center(
+        child: Text('Nessun orario salvato'),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: savedSchedules.length,
+      itemBuilder: (context, index) {
+        final schedule = savedSchedules[index];
+        return Card(
+          margin: const EdgeInsets.only(bottom: 12),
+          child: ListTile(
+            leading: CircleAvatar(
+              backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+              child: Icon(
+                Icons.schedule,
+                color: Theme.of(context).colorScheme.onPrimaryContainer,
+              ),
+            ),
+            title: Text(schedule.name),
+            subtitle: Text(
+              'Creato: ${schedule.createdAt.day}/${schedule.createdAt.month}/${schedule.createdAt.year} '
+              '${schedule.createdAt.hour}:${schedule.createdAt.minute.toString().padLeft(2, '0')}',
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(icon: const Icon(Icons.visibility), onPressed: () => _loadSchedule(schedule.id)),
+                IconButton(icon: Icon(Icons.delete, color: Theme.of(context).colorScheme.error), onPressed: () => _deleteSchedule(schedule.id)),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _loadSchedule(String scheduleId) async {
+    // If there are unsaved changes, ask user
+    if (_dataProvider.isScheduleDirty) {
+      final shouldSave = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Orario non salvato'),
+          content: const Text('Hai un orario non salvato. Vuoi salvarlo prima di aprirne un altro?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('No, scarta')),
+            ElevatedButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Sì, salva')),
+          ],
+        ),
+      );
+
+      if (shouldSave == true) {
+        await _saveCurrentSchedule();
+      }
+    }
+
+    await _dataProvider.loadSchedule(scheduleId);
+    
+    // Get the loaded schedule name
+    final loadedSchedule = _dataProvider.schedules.firstWhere((s) => s.id == scheduleId, orElse: () => 
+        Schedule(id: scheduleId, name: 'Orario Caricato', generationSeed: 0, createdAt: DateTime.now(), updatedAt: DateTime.now()));
+    
+    setState(() {
+      _currentScheduleId = scheduleId;
+      _scheduleName = loadedSchedule.name;
+      _scheduleNameController.text = _scheduleName;
+      _showSchedulesList = false;
+    });
+  }
+
+  Future<void> _deleteSchedule(String scheduleId) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Elimina orario'),
+        content: const Text('Sei sicuro di voler eliminare questo orario?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Annulla')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Elimina'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _dataProvider.deleteSavedSchedule(scheduleId);
+      // Refresh list
+      await _dataProvider.fetchSchedules();
+      if (mounted) setState(() {});
+    }
+  }
+
+  Future<void> _saveCurrentSchedule() async {
+    if (_dataProvider.scheduleSlots.isEmpty) return;
+
+    final result = await _dataProvider.generateInstituteSchedule();
+    setState(() {
+      _currentScheduleId = result;
+    });
+  }
+
+  // Generate schedule method
+  Future<void> _generateSchedule() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Genera Orario'),
+        content: const Text('Questo genererà un nuovo orario per tutto l\'istituto. Continuare?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Annulla')),
+          ElevatedButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Genera')),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      final scheduleId = await _dataProvider.generateInstituteSchedule();
+      await _dataProvider.fetchSchedules(); // Refresh schedules
+      final currentSchedule = _dataProvider.getCurrentSchedule();
+      
+      setState(() {
+        _currentScheduleId = scheduleId;
+        if (currentSchedule != null) {
+          _scheduleName = currentSchedule.name;
+          _scheduleNameController.text = _scheduleName;
+        }
+      });
+      await _dataProvider.fetchScheduleSlots(scheduleId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Orario generato con successo!')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Errore durante la generazione: $e')),
+      );
+    }
+  }
+
+  // Clear schedule method
+  Future<void> _clearSchedule() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Pulisci Orario'),
+        content: const Text('Questo rimuoverà tutti gli slot dell\'orario. Continuare?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Annulla')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Pulisci'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await _dataProvider.clearAllSchedules();
+      await _dataProvider.fetchScheduleSlots('');
+      setState(() {
+        _currentScheduleId = null;
+        _scheduleName = 'Orario Attuale';
+        _scheduleNameController.text = _scheduleName;
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Orario pulito con successo!')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Errore durante la pulizia: $e')),
+      );
+    }
+  }
+
+  // Update schedule name method
+  Future<void> _updateScheduleName(String newName) async {
+    if (newName.trim().isEmpty || _currentScheduleId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nome non valido o nessun orario caricato')),
+      );
+      return;
+    }
+    
+    try {
+      await _dataProvider.updateScheduleName(_currentScheduleId!, newName.trim());
+      
+      setState(() {
+        _scheduleName = newName.trim();
+      });
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Nome orario aggiornato: ${newName.trim()}'),
+          backgroundColor: Theme.of(context).colorScheme.primary,
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Errore nell\'aggiornamento: $e'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
+  }
+
+  // Export to PDF method
+  Future<void> _exportToPDF(DataProvider dataProvider) async {
+    if (dataProvider.teachers.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nessun dato da esportare')),
+      );
+      return;
+    }
+
+    try {
+      final pdf = pw.Document();
+      final days = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì'];
+      final hours = ['1', '2', '3', '4', '5', '6'];
+
+      // Helper to find slot for a given teacher/day/hour
+      ScheduleSlot? slotFor(String teacherId, int dayIndex, int hourIndex) {
+        try {
+          return dataProvider.scheduleSlots.firstWhere(
+            (s) => s.teacherId == teacherId && s.dayOfWeek == dayIndex && s.hourSlot == hourIndex
+          );
+        } catch (_) {
+          return null;
+        }
+      }
+
+      pdf.addPage(
+        pw.Page(
+          pageFormat: PdfPageFormat.a4.landscape,
+          build: (pw.Context context) {
+            return pw.Column(
+              children: [
+                pw.Text(
+                  _scheduleName,
+                  style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold),
+                ),
+                pw.SizedBox(height: 20),
+                pw.Table(
+                  border: pw.TableBorder.all(),
+                  children: [
+                    // Header row
+                    pw.TableRow(
+                      children: [
+                        pw.Container(
+                          padding: const pw.EdgeInsets.all(8),
+                          child: pw.Text('Docente', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                        ),
+                        ...days.expand((day) => hours.map((hour) => 
+                          pw.Container(
+                            padding: const pw.EdgeInsets.all(4),
+                            child: pw.Column(
+                              children: [
+                                if (hour == '1') pw.Text(day, style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 8)),
+                                pw.Text(hour, style: const pw.TextStyle(fontSize: 10)),
+                              ],
+                            ),
+                          ),
+                        )).toList(),
+                      ],
+                    ),
+                    // Teacher rows
+                    ...dataProvider.teachers.map((teacher) {
+                      return pw.TableRow(
+                        children: [
+                          pw.Container(
+                            padding: const pw.EdgeInsets.all(8),
+                            child: pw.Text(teacher.name, style: const pw.TextStyle(fontSize: 10)),
+                          ),
+                          ...days.expand((day) => hours.map((hour) {
+                            final dayIndex = days.indexOf(day) + 1;
+                            final hourIndex = hours.indexOf(hour) + 1;
+                            final slot = slotFor(teacher.id, dayIndex, hourIndex);
+                            
+                            String className = '';
+                            if (slot != null) {
+                              try {
+                                final cls = dataProvider.classes.firstWhere((c) => c.id == slot.classId);
+                                className = cls.name;
+                              } catch (_) {
+                                className = 'N/A';
+                              }
+                            }
+                            
+                            return pw.Container(
+                              padding: const pw.EdgeInsets.all(4),
+                              child: pw.Text(className, style: const pw.TextStyle(fontSize: 8)),
+                            );
+                          })).toList(),
+                        ],
+                      );
+                    }).toList(),
+                  ],
+                ),
+              ],
+            );
+          },
+        ),
+      );
+
+      // Get platform-appropriate directory
+      Directory? directory;
+      String directoryName = '';
+      
+      if (Platform.isAndroid) {
+        try {
+          directory = await getExternalStorageDirectory();
+          directoryName = 'Download Android';
+        } catch (_) {
+          directory = await getApplicationDocumentsDirectory();
+          directoryName = 'App Documents';
+        }
+      } else {
+        // Linux, Windows, macOS
+        directory = await getDownloadsDirectory() ?? await getApplicationDocumentsDirectory();
+        directoryName = directory.path.contains('Downloads') ? 'Downloads' : 'Documents';
+      }
+      
+      if (directory == null) {
+        throw Exception('Impossibile accedere alla directory di download');
+      }
+      
+      final fileName = '${_scheduleName.replaceAll(' ', '_')}_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      final file = File('${directory.path}/$fileName');
+      
+      // Create directory if it doesn't exist
+      await directory.create(recursive: true);
+      
+      // Save the PDF file
+      await file.writeAsBytes(await pdf.save());
+      
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('PDF salvato in $directoryName: $fileName'),
+          duration: const Duration(seconds: 4),
+          action: SnackBarAction(
+            label: 'OK',
+            onPressed: () {},
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Errore durante l\'export PDF: $e'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
+  }
+}
+
