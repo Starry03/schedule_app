@@ -562,7 +562,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
     // Use the progress-enabled method with yielding points
     return await _dataProvider.generateInstituteScheduleWithProgress((progress) {
       // Could show progress in the future, for now just ensure UI responsiveness
-      print('Schedule generation progress: ${(progress * 100).toInt()}%');
+      debugPrint('Schedule generation progress: ${(progress * 100).toInt()}%');
     });
   }
 

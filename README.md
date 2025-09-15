@@ -1,85 +1,74 @@
-<!-- README in Italian: clear, concise, and developer-friendly -->
+# Schedule App
 
-<!-- README in English: clear, concise, and developer-friendly -->
-# Schedule App — Teacher Schedule Generator
+A lightweight Flutter client for viewing and exporting school schedules. This repository contains the UI client only — intended for private use. The app connects directly to a Supabase project from the client using a `.env` file. Do not use this repository to host secrets publicly.
 
-Schedule App is a Flutter application for generating and managing teacher schedules. It is intended to be run locally or self-hosted, with Supabase (Postgres) as the backend. The project focuses on privacy and configurability for small institutions and schools.
+## Quick start
 
-## Key Features
+Prerequisites:
+- Flutter SDK (stable)
+- Python 3 (for the local static server used by PWA helpers)
 
-- Manage teachers, subjects, classes and availability constraints
-- Intelligent schedule generation algorithm
-- Visual schedule editor and manual adjustments
-- PDF export with a compact timetable layout
-- Designed to work with Supabase but suitable for self-hosting
+Run locally (development):
 
-## Requirements
+```bash
+flutter pub get
+flutter run -d chrome
+```
 
-- Flutter SDK (3.x or newer)
-- Dart
-- A Supabase project with the tables used by the app (see models in `lib/models`)
-- Supabase URL and anon key configured for the app (via `supabase_flutter`)
+Build a release web bundle:
 
-## Quick setup (development)
+```bash
+flutter build web --release
+```
 
-1. Clone the repository
+Serve the built web folder locally (quick check / PWA test):
 
-	`git clone https://github.com/<owner>/<repo>.git`
+```bash
+# from repo root
+python3 -m http.server 8000 --directory build/web
+```
 
-2. Install dependencies
+## PWA & auto-start helpers
 
-	`flutter pub get`
+This repo includes convenience scripts to run the static `build/web` on macOS and Linux at user login.
 
-3. Configure Supabase
+- macOS (LaunchAgent): `scripts/pwa/install_macos.sh` installs a LaunchAgent that runs `python3 -m http.server 9999 --bind 127.0.0.1` at login. Uninstall with `scripts/pwa/uninstall_macos.sh`.
+- Linux (systemd user): `scripts/pwa/install_linux.sh` installs a user systemd service that serves `build/web` on `127.0.0.1:9999`. Remove with `scripts/pwa/uninstall_linux.sh`.
+- Dispatcher: `scripts/install.sh` detects your OS and target and calls the appropriate installer. Use `--target web|native` and `--uninstall` flags.
 
-- Create a Supabase project and the required tables: `teachers`, `subjects`, `classes`, `schedules`, `schedule_slots`, `teacher_subjects`, `teacher_constraints`, etc.
-- Configure the Supabase URL and anon key in your app environment so `lib/providers/data_provider.dart` can instantiate the client.
+Examples:
 
-4. Run the app
+```bash
+# Install web PWA auto-start for current OS
+./scripts/install.sh --target web
 
-	`flutter run -d <deviceId>`
+# Uninstall
+./scripts/install.sh --target web --uninstall
+```
 
-Tip: For debugging data and network requests, use the Supabase dashboard and check logs in your Flutter app.
+## PDF export
 
-## PDF export details
+Use the in-app "Export PDF" action to generate the schedule PDF. Web builds trigger a browser download. Native builds write a file to a sensible user folder and show the path in a snackbar.
 
-The PDF export produces a wide timetable with the following behaviour:
+## Security & secrets (important)
 
-- First column: `Teacher` (fixed width, adapts to longest name)
-- 30 slot columns: 5 days × 6 hours each
-- Cells that correspond to teacher availability constraints are highlighted with a light blue (celeste) background
-- The generator attempts to resize the teacher-column font to avoid wrapping; if a layout error occurs a simplified fallback PDF is created
+This app reads Supabase credentials from a `.env` file at runtime (client-side). That means the anon/service keys are present in client code if you bundle `.env` into assets. This repository is intended as a private client-only tool. Important recommendations:
 
-If you see rendering errors (e.g. layout assertions mentioning `isNaN`), the app will try a fallback export and save a `_fallback.pdf` file.
-
-## Constraints (availability) workflow
-
-To edit and save a single teacher's constraints:
-
-1. Open the Teacher list and select `Vincoli` (Constraints) for a teacher.
-2. Toggle the desired slots (blocked/unblocked) in the grid.
-3. Press the save icon (top-right) to persist changes to Supabase (`teacher_constraints` table).
-
-If changes are not saved, check your network connectivity, Supabase credentials, and app logs for errors.
+- Never publish `.env` with real credentials to a public repo.
+- If keys are exposed, rotate them immediately in the Supabase dashboard.
+- Prefer storing secrets in a trusted server-side backend or use environment injection in build/CI (do not embed service keys into public builds).
 
 ## Troubleshooting
 
-- `dart analyze` may show informational lints or a test-related error; these are generally non-blocking but fix tests if you run CI.
-- Android PDF save issues: ensure file write permissions are configured in `AndroidManifest.xml` for devices that require them.
-- If schedule generation fails due to conflicting constraints, verify `teacher_subjects` assignments and existing constraints.
+- If `flutter run` or `flutter build web` fails: ensure your Flutter SDK is up to date and run `flutter doctor`.
+- If the PWA auto-start service doesn't launch:
+  - macOS: check `~/Library/Logs/com.schedule_app.pwa-server.log` and `.err`; ensure `python3` is in your PATH for launchd or update the helper to use an absolute path.
+  - Linux: check `journalctl --user -u schedule_app_pwa_server.service` for logs.
+- If PDF download doesn't start on web, open DevTools Console for errors and make sure `build/web/flutter_service_worker.js` and `manifest.json` exist in the web bundle.
 
 ## Contributing
 
-Contributions are welcome. Please open an issue or a pull request for:
-
-- Improvements to the scheduling algorithm
-- UI/UX fixes (including PDF layout tweaks)
-- Automated tests and CI configuration
-
-## License
-
-This project is open-source. Add your preferred license (MIT, Apache-2.0, etc.) here.
+This is a small private client — open an issue or submit a PR if you add a packaging step, CI secret injection, or server-side proxy to avoid exposing keys.
 
 ---
-
-Would you like me to add developer shortcuts (DB migration scripts, seed commands, or Supabase schema snippets)? I can add those next.
+Private client | Use with care — do not publish keys

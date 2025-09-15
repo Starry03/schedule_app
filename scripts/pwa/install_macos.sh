@@ -8,15 +8,24 @@ if [[ "$(uname)" != "Darwin" ]]; then
     exit 1
 fi
 
-# Check if the build/web directory exists
-if [[ ! -d "build/web" ]]; then
+echo "Setting up the PWA to run on startup (macOS)..."
+
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+WEB_BUILD_DIR="$REPO_ROOT/build/web"
+INSTALL_DIR="$HOME/Library/Application Support/schedule_app"
+INSTALL_WEB_DIR="$INSTALL_DIR/web"
+
+if [[ ! -d "${WEB_BUILD_DIR}" ]]; then
     echo "Building the Flutter web app..."
-    flutter build web --release || { echo "Flutter build failed"; exit 1; }
+    (cd "${REPO_ROOT}" && flutter build web --release) || { echo "Flutter build failed"; exit 1; }
 fi
 
-# set the server as startup process
+echo "Creating install directory: ${INSTALL_WEB_DIR}"
+mkdir -p "${INSTALL_WEB_DIR}"
 
-echo "Setting up the PWA to run on startup..."
+echo "Copying web assets to ${INSTALL_WEB_DIR}"
+rm -rf "${INSTALL_WEB_DIR:?}/*" || true
+cp -a "${WEB_BUILD_DIR}/." "${INSTALL_WEB_DIR}/"
 
 LAUNCH_AGENT_DIR="$HOME/Library/LaunchAgents"
 PLIST_LABEL="com.schedule_app.pwa-server"
@@ -38,8 +47,14 @@ cat > "$PLIST_PATH" <<EOF
         <string>${PLIST_LABEL}</string>
         <key>ProgramArguments</key>
         <array>
+            <string>/bin/bash</string>
             <string>${SCRIPT_PATH}</string>
         </array>
+        <key>EnvironmentVariables</key>
+        <dict>
+            <key>SCHEDULE_APP_WEB_DIR</key>
+            <string>${INSTALL_WEB_DIR}</string>
+        </dict>
         <key>RunAtLoad</key>
         <true/>
         <key>KeepAlive</key>
@@ -58,4 +73,4 @@ launchctl load --user "$PLIST_PATH"
 
 echo "Installed. Server should be available at http://localhost:9999"
 
-echo "To uninstall, run: launchctl unload '$PLIST_PATH' && rm -f '$PLIST_PATH'"
+echo "To uninstall, run: $0 --uninstall or run the uninstall script: scripts/pwa/uninstall_macos.sh"

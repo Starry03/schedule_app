@@ -9,34 +9,29 @@ import 'providers/theme_provider.dart';
 import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 
-
-
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
     await dotenv.load();
   } catch (e) {
-    // If .env isn't present in the runtime bundle, don't crash the app.
-    // Log and proceed; Supabase anonKey will fall back to empty string if missing.
-    // The app expects keys from environment or CI in production builds.
-    // ignore: avoid_print
-    print('Warning: .env not found at runtime: $e');
+    debugPrint('Warning: .env not found at runtime: $e');
+    return;
   }
   await Supabase.initialize(
-    url: 'https://ttggbamhaqzrtaedjhwb.supabase.co',
+    url: dotenv.env['SUPABASE_URL'] ?? '',
     anonKey: dotenv.env['SUPABASE_ANON_KEY'] ?? '',
   );
-  
+
   // Initialize ThemeProvider early to load saved theme
   final themeProvider = ThemeProvider();
   await themeProvider.initialize();
-  
+
   runApp(MyApp(themeProvider: themeProvider));
 }
 
 class MyApp extends StatelessWidget {
   final ThemeProvider themeProvider;
-  
+
   const MyApp({super.key, required this.themeProvider});
 
   @override
@@ -64,27 +59,18 @@ class MyApp extends StatelessWidget {
 
 final GoRouter _router = GoRouter(
   routes: [
-    GoRoute(
-      path: '/',
-      builder: (context, state) => const AuthWrapper(),
-    ),
-    GoRoute(
-      path: '/login',
-      builder: (context, state) => const LoginScreen(),
-    ),
-    GoRoute(
-      path: '/home',
-      builder: (context, state) => const HomeScreen(),
-    ),
+    GoRoute(path: '/', builder: (context, state) => const AuthWrapper()),
+    GoRoute(path: '/login', builder: (context, state) => const LoginScreen()),
+    GoRoute(path: '/home', builder: (context, state) => const HomeScreen()),
   ],
   redirect: (context, state) {
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    
+
     // Don't redirect while still initializing
     if (!authProvider.isInitialized) {
       return null;
     }
-    
+
     final isAuthenticated = authProvider.isAuthenticated;
     final isLogin = state.matchedLocation == '/login';
     if (!isAuthenticated && !isLogin) {
@@ -103,7 +89,7 @@ class AuthWrapper extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final authProvider = Provider.of<AuthProvider>(context);
-    
+
     // Show loading while initializing
     if (!authProvider.isInitialized) {
       return const Scaffold(
@@ -114,7 +100,7 @@ class AuthWrapper extends StatelessWidget {
         ),
       );
     }
-    
+
     if (authProvider.isAuthenticated) {
       return const HomeScreen();
     } else {
@@ -122,5 +108,3 @@ class AuthWrapper extends StatelessWidget {
     }
   }
 }
-
-

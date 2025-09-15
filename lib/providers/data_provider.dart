@@ -489,7 +489,7 @@ class DataProvider with ChangeNotifier {
   _isScheduleDirty = false;
   notifyListeners();
     } catch (e) {
-      print('Error generating schedule: $e');
+      debugPrint('Error generating schedule: $e');
       rethrow;
     }
   }
@@ -877,7 +877,7 @@ class DataProvider with ChangeNotifier {
   notifyListeners();
   return masterSchedule.id;
     } catch (e) {
-      print('Error generating institute schedule: $e');
+      debugPrint('Error generating institute schedule: $e');
       rethrow;
     }
   }
@@ -890,7 +890,7 @@ class DataProvider with ChangeNotifier {
       
       notifyListeners();
     } catch (e) {
-      print('Error clearing schedule for class: $e');
+      debugPrint('Error clearing schedule for class: $e');
       rethrow;
     }
   }
@@ -905,7 +905,7 @@ class DataProvider with ChangeNotifier {
       
       notifyListeners();
     } catch (e) {
-      print('Error loading schedule: $e');
+      debugPrint('Error loading schedule: $e');
       rethrow;
     }
   }
@@ -933,7 +933,7 @@ class DataProvider with ChangeNotifier {
       
       notifyListeners();
     } catch (e) {
-      print('Error deleting saved schedule: $e');
+      debugPrint('Error deleting saved schedule: $e');
       rethrow;
     }
   }
@@ -955,7 +955,7 @@ class DataProvider with ChangeNotifier {
         notifyListeners();
       }
     } catch (e) {
-      print('Error updating schedule name: $e');
+      debugPrint('Error updating schedule name: $e');
       rethrow;
     }
   }
