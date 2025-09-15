@@ -13,7 +13,15 @@ import 'screens/home_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await dotenv.load();
+  try {
+    await dotenv.load();
+  } catch (e) {
+    // If .env isn't present in the runtime bundle, don't crash the app.
+    // Log and proceed; Supabase anonKey will fall back to empty string if missing.
+    // The app expects keys from environment or CI in production builds.
+    // ignore: avoid_print
+    print('Warning: .env not found at runtime: $e');
+  }
   await Supabase.initialize(
     url: 'https://ttggbamhaqzrtaedjhwb.supabase.co',
     anonKey: dotenv.env['SUPABASE_ANON_KEY'] ?? '',

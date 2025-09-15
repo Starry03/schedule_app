@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:path_provider/path_provider.dart';
-import 'dart:io';
+import '../utils/save_pdf.dart';
 import '../providers/theme_provider.dart';
 import '../providers/data_provider.dart';
 import '../models/schedule_slot.dart';
@@ -859,64 +858,21 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
         ),
       );
 
-      // Get platform-appropriate directory with better fallback handling
-      Directory? directory;
-      String directoryName = '';
-      
-      if (Platform.isAndroid) {
-        try {
-          directory = await getExternalStorageDirectory();
-          directoryName = 'Storage Android';
-        } catch (_) {
-          directory = await getApplicationDocumentsDirectory();
-          directoryName = 'App Documents';
-        }
-      } else {
-        // Try Downloads first, then fallback to Documents, then App Documents
-        try {
-          directory = await getDownloadsDirectory();
-          if (directory != null && await directory.exists()) {
-            directoryName = 'Downloads';
-          } else {
-            throw Exception('Downloads directory not accessible');
-          }
-        } catch (_) {
-          try {
-            // Try user home Documents folder
-            final homeDir = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
-            if (homeDir != null) {
-              directory = Directory('$homeDir/Documents');
-              if (await directory.exists()) {
-                directoryName = 'Documents';
-              } else {
-                throw Exception('Documents directory not accessible');
-              }
-            } else {
-              throw Exception('Home directory not found');
-            }
-          } catch (_) {
-            // Last fallback: app documents directory
-            directory = await getApplicationDocumentsDirectory();
-            directoryName = 'App Documents';
-          }
-        }
-      }
-      
-      if (directory == null) {
-        throw Exception('Impossibile accedere a nessuna directory di salvataggio');
-      }
-      
-      // Ensure the directory exists
-      if (!await directory.exists()) {
-        await directory.create(recursive: true);
-      }
-      
       final fileName = '${_scheduleName.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')}_${DateTime.now().millisecondsSinceEpoch}.pdf';
-      final file = File('${directory.path}/$fileName');
-      
-      // Save the PDF file (with fallback if pdf.save() fails due to layout NaN)
+
+      // Save the PDF using a cross-platform helper. On web this triggers a
+      // browser download; on other platforms it writes to a sensible folder.
       try {
-        await file.writeAsBytes(await pdf.save());
+        final bytes = await pdf.save();
+        final result = await savePdf(bytes, fileName);
+        // Detect NaN/layout assertion errors and fall back to a simpler PDF format
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('PDF saved in ${result['directory']}:\n${result['path']}'),
+            duration: const Duration(seconds: 6),
+          ),
+        );
       } catch (saveError) {
         // Detect NaN/layout assertion errors and fall back to a simpler PDF format
         final msg = saveError.toString();
@@ -970,40 +926,25 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
           );
 
           final fallbackName = '${_scheduleName.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')}_${DateTime.now().millisecondsSinceEpoch}_fallback.pdf';
-          final fallbackFile = File('${directory.path}/$fallbackName');
-          await fallbackFile.writeAsBytes(await fallbackPdf.save());
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('PDF salvato (fallback) in $directoryName:\n$fallbackName'),
-              duration: const Duration(seconds: 6),
-            ),
-          );
+          final bytes = await fallbackPdf.save();
+          try {
+            final result = await savePdf(bytes, fallbackName);
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('PDF saved (fallback) in ${result['directory']}:\n${result['path']}'),
+                duration: const Duration(seconds: 6),
+              ),
+            );
+          } catch (e) {
+            rethrow; // allow outer catch to show error
+          }
           return;
         }
 
         // If it's a different error, rethrow to be handled by outer catch
         rethrow;
       }
-      
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('PDF salvato in $directoryName:\n$fileName'),
-          duration: const Duration(seconds: 5),
-          action: SnackBarAction(
-            label: 'Percorso',
-            onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('Percorso completo:\n${file.path}'),
-                  duration: const Duration(seconds: 8),
-                ),
-              );
-            },
-          ),
-        ),
-      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
