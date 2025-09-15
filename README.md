@@ -5,6 +5,7 @@ A lightweight Flutter client for viewing and exporting school schedules. This re
 ## Quick start
 
 Prerequisites:
+
 - Flutter SDK (stable)
 - Python 3 (for the local static server used by PWA helpers)
 - Supabase project (see [schema](./schema.sql))
