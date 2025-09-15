@@ -25,3 +25,10 @@ if [[ -d "$INSTALL_WEB_DIR" ]]; then
 fi
 
 echo "Uninstall complete."
+
+# Remove installed runner
+INSTALLED_RUNNER="$HOME/.local/share/schedule_app/run_pwa_server.sh"
+if [[ -f "$INSTALLED_RUNNER" ]]; then
+  echo "Removing installed runner at $INSTALLED_RUNNER"
+  rm -f "$INSTALLED_RUNNER"
+fi

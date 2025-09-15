@@ -33,4 +33,11 @@ if [[ -d "$INSTALL_WEB_DIR" ]]; then
   rmdir --ignore-fail-on-non-empty "$(dirname "$INSTALL_WEB_DIR")" 2>/dev/null || true
 fi
 
+# Remove installed runner if present
+INSTALLED_RUNNER="$HOME/Library/Application Support/schedule_app/run_pwa_server.sh"
+if [[ -f "$INSTALLED_RUNNER" ]]; then
+  echo "Removing installed runner at $INSTALLED_RUNNER"
+  rm -f "$INSTALLED_RUNNER"
+fi
+
 echo "Uninstall complete."

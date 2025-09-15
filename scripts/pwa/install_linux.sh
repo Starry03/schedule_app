@@ -22,6 +22,17 @@ mkdir -p "${INSTALL_WEB_DIR}"
 rm -rf "${INSTALL_WEB_DIR:?}/*" || true
 cp -a "${WEB_BUILD_DIR}/." "${INSTALL_WEB_DIR}/"
 
+# Copy runner into install dir so the service doesn't depend on the repo
+REPO_RUNNER="$(cd "$(dirname "$0")" && pwd)/run_pwa_server.sh"
+INSTALLED_RUNNER="$INSTALL_DIR/run_pwa_server.sh"
+if [[ -f "${REPO_RUNNER}" ]]; then
+    mkdir -p "$INSTALL_DIR"
+    cp "$REPO_RUNNER" "$INSTALLED_RUNNER"
+    chmod +x "$INSTALLED_RUNNER"
+else
+    echo "Warning: repo runner not found at ${REPO_RUNNER}; service ExecStart will point to ${INSTALLED_RUNNER} and may fail."
+fi
+
 cat > "$SERVICE_PATH" <<EOF
 [Unit]
 Description=Schedule App PWA static server
@@ -29,7 +40,7 @@ Description=Schedule App PWA static server
 [Service]
 Type=simple
 WorkingDirectory=${INSTALL_WEB_DIR}
-ExecStart=/usr/bin/env python3 -m http.server 9999 --bind 127.0.0.1
+ExecStart=${INSTALLED_RUNNER}
 Restart=always
 
 [Install]

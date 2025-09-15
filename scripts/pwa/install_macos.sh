@@ -30,12 +30,19 @@ cp -a "${WEB_BUILD_DIR}/." "${INSTALL_WEB_DIR}/"
 LAUNCH_AGENT_DIR="$HOME/Library/LaunchAgents"
 PLIST_LABEL="com.schedule_app.pwa-server"
 PLIST_PATH="$LAUNCH_AGENT_DIR/${PLIST_LABEL}.plist"
-SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/run_pwa_server.sh"
+REPO_RUNNER="$(cd "$(dirname "$0")" && pwd)/run_pwa_server.sh"
+INSTALLED_RUNNER="$INSTALL_DIR/run_pwa_server.sh"
 
 mkdir -p "$LAUNCH_AGENT_DIR"
 
-echo "Making helper script executable: $SCRIPT_PATH"
-chmod +x "$SCRIPT_PATH"
+echo "Installing helper script to ${INSTALLED_RUNNER}"
+if [[ -f "${REPO_RUNNER}" ]]; then
+    mkdir -p "$INSTALL_DIR"
+    cp "$REPO_RUNNER" "$INSTALLED_RUNNER"
+    chmod +x "$INSTALLED_RUNNER"
+else
+    echo "Warning: repo runner not found at ${REPO_RUNNER}; the service will call the installed runner path and may fail until the runner is placed there."
+fi
 
 echo "Writing LaunchAgent plist to $PLIST_PATH"
 cat > "$PLIST_PATH" <<EOF
@@ -46,10 +53,10 @@ cat > "$PLIST_PATH" <<EOF
         <key>Label</key>
         <string>${PLIST_LABEL}</string>
         <key>ProgramArguments</key>
-        <array>
-            <string>/bin/bash</string>
-            <string>${SCRIPT_PATH}</string>
-        </array>
+            <array>
+                <string>/bin/bash</string>
+                <string>${INSTALLED_RUNNER}</string>
+            </array>
         <key>EnvironmentVariables</key>
         <dict>
             <key>SCHEDULE_APP_WEB_DIR</key>
