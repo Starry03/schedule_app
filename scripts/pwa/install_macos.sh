@@ -68,8 +68,21 @@ cat > "$PLIST_PATH" <<EOF
 EOF
 
 echo "Loading LaunchAgent (will start server now)"
-launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
-launchctl load --user "$PLIST_PATH"
+# Use modern launchctl bootstrap/bootout if available, otherwise fall back to load/unload for compatibility
+if launchctl help | grep -q bootout; then
+    # Unload previous instance if present
+    launchctl bootout gui/$(id -u) "$PLIST_PATH" >/dev/null 2>&1 || true
+    # Bootstrap the plist into the user's domain
+    launchctl bootstrap gui/$(id -u) "$PLIST_PATH" || {
+        echo "launchctl bootstrap failed; attempting legacy load as fallback"
+        launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
+        launchctl load --user "$PLIST_PATH" || true
+    }
+else
+    # Legacy macOS where bootstrap isn't available
+    launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
+    launchctl load --user "$PLIST_PATH" || true
+fi
 
 echo "Installed. Server should be available at http://localhost:9999"
 

@@ -9,7 +9,11 @@ echo "Uninstalling PWA LaunchAgent: ${PLIST_PATH}"
 
 if [[ -f "$PLIST_PATH" ]]; then
   echo "Unloading LaunchAgent..."
-  launchctl unload "$PLIST_PATH" || true
+  if launchctl help | grep -q bootout; then
+    launchctl bootout gui/$(id -u) "$PLIST_PATH" >/dev/null 2>&1 || true
+  else
+    launchctl unload "$PLIST_PATH" || true
+  fi
   echo "Removing plist..."
   rm -f "$PLIST_PATH"
 else
