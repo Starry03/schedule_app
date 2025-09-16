@@ -6,6 +6,7 @@ import '../utils/save_pdf.dart';
 import '../providers/theme_provider.dart';
 import '../providers/data_provider.dart';
 import '../models/schedule_slot.dart';
+import '../providers/settings_provider.dart';
 import '../models/schedule.dart';
 
 class ScheduleScreen extends StatefulWidget {
@@ -15,6 +16,56 @@ class ScheduleScreen extends StatefulWidget {
   State<ScheduleScreen> createState() => _ScheduleScreenState();
 }
 
+class _ScheduleCell extends StatefulWidget {
+  final String keyString;
+  final Widget child;
+  final Color bgColor;
+  final Color borderColor;
+  final bool isSelected;
+  final bool isInvalid;
+  final VoidCallback onTap;
+
+  const _ScheduleCell({
+    required this.keyString,
+    required this.child,
+    required this.bgColor,
+    required this.borderColor,
+    required this.isSelected,
+    required this.isInvalid,
+    required this.onTap,
+  });
+
+  @override
+  State<_ScheduleCell> createState() => _ScheduleCellState();
+}
+
+class _ScheduleCellState extends State<_ScheduleCell> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final borderWidth = widget.isSelected ? 2.4 : 0.5;
+    final effectiveBorderColor = widget.isInvalid ? Theme.of(context).colorScheme.error : widget.borderColor;
+    final boxShadow = _hover ? [BoxShadow(color: Theme.of(context).colorScheme.primary.withOpacity(0.12), blurRadius: 6, spreadRadius: 1)] : null;
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          decoration: BoxDecoration(
+            color: widget.bgColor,
+            border: Border.all(color: effectiveBorderColor, width: borderWidth),
+            boxShadow: boxShadow,
+          ),
+          child: widget.child,
+        ),
+      ),
+    );
+  }
+}
+
 class _ScheduleScreenState extends State<ScheduleScreen> {
   late DataProvider _dataProvider;
   bool _showSchedulesList = false;
@@ -22,6 +73,16 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   String? _currentScheduleId;
   String _scheduleName = 'Orario Attuale';
   final TextEditingController _scheduleNameController = TextEditingController();
+  // Selection prototype for moving/swapping slots
+  String? _selectedSlotKey; // format: teacherId-day-hour
+  // Track slots that violate constraints after edits (to highlight before save)
+  final Set<String> _invalidSlotKeys = {};
+  String? _saveErrorMessage;
+  // Track last swap for undo: store indices and previous classIds
+  Map<String, dynamic>? _lastSwap;
+  // hover now managed per-cell by _ScheduleCell to avoid rebuilding the whole grid
+
+  String _slotKeyFor(String teacherId, int dayIndex, int hourIndex) => '$teacherId-$dayIndex-$hourIndex';
 
   @override
   void initState() {
@@ -210,6 +271,119 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       }
     }
 
+  // Use _slotKeyFor helper defined on state
+
+    void onSlotTap(String teacherId, int dayIndex, int hourIndex, ScheduleSlot? slot) {
+      // Only allow swapping between two filled slots for this prototype
+      if (slot == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Select a filled slot to swap.')),
+        );
+        return;
+      }
+  final key = _slotKeyFor(teacherId, dayIndex, hourIndex);
+
+      // Validation helpers removed here; validation happens at save time
+
+  debugPrint('onSlotTap: tapped key=$key selected=$_selectedSlotKey');
+      if (_selectedSlotKey == null) {
+        // Allow selecting any filled slot; defer validation to save time
+        setState(() {
+          _selectedSlotKey = key;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Slot selezionato. Tocca un altro slot pieno per scambiare.')),
+        );
+        return;
+      }
+
+      if (_selectedSlotKey == key) {
+        // unselect
+        setState(() {
+          _selectedSlotKey = null;
+        });
+        return;
+      }
+
+      // We have a selected slot and now another one -> attempt swap but validate against DB/algorithm constraints
+      final parts = _selectedSlotKey!.split('-');
+      if (parts.length != 3) {
+        setState(() => _selectedSlotKey = null);
+        return;
+      }
+      final selTeacher = parts[0];
+      final selDay = int.tryParse(parts[1]) ?? 0;
+      final selHour = int.tryParse(parts[2]) ?? 0;
+
+      // Find indices in dataProvider.scheduleSlots
+      int findIndex(String teacherId, int day, int hour) {
+        return dataProvider.scheduleSlots.indexWhere((s) => s.teacherId == teacherId && s.dayOfWeek == day && s.hourSlot == hour);
+      }
+
+      final idxA = findIndex(selTeacher, selDay, selHour);
+      final idxB = findIndex(teacherId, dayIndex, hourIndex);
+      if (idxA == -1 || idxB == -1) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Cannot find slots to swap.')),
+        );
+        setState(() => _selectedSlotKey = null);
+        return;
+      }
+
+      final a = dataProvider.scheduleSlots[idxA];
+      final b = dataProvider.scheduleSlots[idxB];
+
+      debugPrint('Swap indices: idxA=$idxA idxB=$idxB a.class=${a.classId} b.class=${b.classId}');
+
+      // Both slots must be present (filled) to swap; we've already located them (a and b)
+      // If swapping identical class assignments, it's a no-op
+      if (a.classId == b.classId) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Nessun cambiamento: stessi dati.')));
+        setState(() => _selectedSlotKey = null);
+        return;
+      }
+
+      // Save previous state for undo
+      _lastSwap = {
+        'idxA': idxA,
+        'idxB': idxB,
+        'aClass': a.classId,
+        'bClass': b.classId,
+      };
+
+      final tmpClass = a.classId;
+      a.classId = b.classId;
+      b.classId = tmpClass;
+      debugPrint('Swapped: a.class=${a.classId} b.class=${b.classId}');
+  debugPrint('Swapped: a.class=${a.classId} b.class=${b.classId}');
+
+      // Mark schedule dirty and notify
+      dataProvider.markScheduleDirty();
+      setState(() {
+        _selectedSlotKey = null;
+      });
+
+      // Show snackbar with undo
+      final sb = SnackBar(
+        content: const Text('Slots scambiati. Ricordati di salvare le modifiche.'),
+        action: SnackBarAction(label: 'Annulla', onPressed: () {
+          // Undo
+          if (_lastSwap != null) {
+            final ia = _lastSwap!['idxA'] as int;
+            final ib = _lastSwap!['idxB'] as int;
+            final prevA = _lastSwap!['aClass'] as String;
+            final prevB = _lastSwap!['bClass'] as String;
+            dataProvider.scheduleSlots[ia].classId = prevA;
+            dataProvider.scheduleSlots[ib].classId = prevB;
+            dataProvider.markScheduleDirty();
+            setState(() {});
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Swap annullato')));
+          }
+        }),
+      );
+      ScaffoldMessenger.of(context).showSnackBar(sb);
+    }
+
     // Calculate total columns: 1 (teacher) + days * hours
 
     // Create table rows with single header row
@@ -303,7 +477,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       for (var d = 0; d < days.length; d++) {
         final dayIndex = d + 1;
         
-        for (var h = 0; h < hours.length; h++) {
+            for (var h = 0; h < hours.length; h++) {
           final hourIndex = h + 1;
           final slot = slotFor(teacher.id, dayIndex, hourIndex);
 
@@ -335,39 +509,132 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
             );
           }
 
-          cells.add(Container(
-            decoration: BoxDecoration(
-              color: slot == null 
-                ? Theme.of(context).cardColor 
-                : Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3),
-              border: Border.all(
-                color: Theme.of(context).colorScheme.outline.withOpacity(0.3), 
-                width: 0.5,
-              ),
+          final thisKey = _slotKeyFor(teacher.id, dayIndex, hourIndex);
+          final isSelected = (_selectedSlotKey != null && _selectedSlotKey == thisKey);
+          // Determine background colors using settings (high contrast)
+          final settings = Provider.of<SettingsProvider>(context);
+          // When highContrast is enabled, alternate column colors per day to improve day-to-day contrast.
+          Color chooseColumnBg(int dayIdx, bool filled) {
+            if (!settings.highContrast) {
+              return filled ? Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3) : Theme.of(context).cardColor;
+            }
+            // For high contrast we draw full-column stripes behind the table (see below).
+            // Keep filled cells lightly tinted so text remains readable; let empty cells be transparent
+            // so the vertical stripe shows through across the entire table height.
+            final useAlt = (dayIdx % 2) == 0;
+            if (filled) {
+              return useAlt
+                  ? Theme.of(context).colorScheme.primary.withOpacity(0.14)
+                  : Theme.of(context).colorScheme.primary.withOpacity(0.08);
+            }
+            return Colors.transparent;
+          }
+          final bgColor = chooseColumnBg(dayIndex, slot != null);
+          final borderColor = isSelected ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.outline.withOpacity(0.3);
+
+          cells.add(
+            _ScheduleCell(
+              keyString: thisKey,
+              child: cellContent,
+              bgColor: bgColor,
+              borderColor: borderColor,
+              isSelected: isSelected,
+              isInvalid: _invalidSlotKeys.contains(thisKey),
+              onTap: () => onSlotTap(teacher.id, dayIndex, hourIndex, slot),
             ),
-            child: cellContent,
-          ));
+          );
         }
       }
 
       rows.add(TableRow(children: cells));
     }
 
-    // Wrap table in horizontal + vertical scroll views
+    // Wrap table in horizontal + vertical scroll views. When highContrast is enabled
+    // draw full-height vertical stripes behind the table to separate days visually.
+    final settings = Provider.of<SettingsProvider>(context);
+
+    // Column layout constants (match Table.columnWidths)
+    const teacherColWidth = 120.0;
+    const slotColWidth = 80.0; // each hour slot column
+
+    // Build the table widget as before
+    final tableWidget = Table(
+      defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+      columnWidths: {
+        0: const FixedColumnWidth(teacherColWidth), // Teacher column
+        for (var i = 1; i < 1 + (days.length * hours.length); i++)
+          i: const FixedColumnWidth(slotColWidth),
+      },
+      children: rows,
+    );
+
+    // If highContrast, prepare a stack with full-height stripes underneath the table
+    Widget content;
+    if (settings.highContrast) {
+      // total width: teacher col + all slot cols
+      final totalWidth = teacherColWidth + (days.length * hours.length * slotColWidth);
+
+      // Build positioned stripe containers for each day group (each day spans 6 slot columns)
+      final List<Widget> stripes = [];
+      // Add teacher column background first
+      stripes.add(Positioned(
+        left: 0,
+        top: 0,
+        bottom: 0,
+        width: teacherColWidth,
+        child: Container(color: Theme.of(context).colorScheme.surfaceContainerHighest),
+      ));
+
+      for (var d = 0; d < days.length; d++) {
+        final dayIdx = d + 1;
+        final dayStartLeft = teacherColWidth + (d * hours.length * slotColWidth);
+        // Choose stripe color by day index (3-tone subtle palette)
+        final stripeColor = (dayIdx % 3 == 0)
+            ? Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.06)
+            : (dayIdx % 3 == 1)
+                ? Theme.of(context).colorScheme.surfaceContainer.withOpacity(0.05)
+                : Theme.of(context).colorScheme.surface.withOpacity(0.03);
+
+        stripes.add(Positioned(
+          left: dayStartLeft,
+          top: 0,
+          bottom: 0,
+          width: hours.length * slotColWidth,
+          child: Container(color: stripeColor),
+        ));
+
+        // Add a thin vertical divider at the right edge of the day group to emphasize boundary
+        stripes.add(Positioned(
+          left: dayStartLeft + hours.length * slotColWidth - 1,
+          top: 8,
+          bottom: 8,
+          width: 1,
+          child: Container(color: Theme.of(context).colorScheme.outline.withOpacity(0.35)),
+        ));
+      }
+
+      // Wrap table in scrollables and place stripes behind it
+      content = SizedBox(
+        width: totalWidth,
+        child: Stack(
+          children: [
+            // full-height stripes
+            ...stripes,
+            // Table sits above stripes
+            tableWidget,
+          ],
+        ),
+      );
+    } else {
+      content = tableWidget;
+    }
+
     return Padding(
       padding: const EdgeInsets.all(16),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: SingleChildScrollView(
-          child: Table(
-            defaultVerticalAlignment: TableCellVerticalAlignment.middle,
-            columnWidths: {
-              0: const FixedColumnWidth(120), // Teacher column
-              for (var i = 1; i < 1 + (days.length * hours.length); i++) 
-                i: const FixedColumnWidth(80),
-            },
-            children: rows,
-          ),
+          child: content,
         ),
       ),
     );
@@ -477,10 +744,77 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   Future<void> _saveCurrentSchedule() async {
     if (_dataProvider.scheduleSlots.isEmpty) return;
 
-    final result = await _dataProvider.generateInstituteSchedule();
-    setState(() {
-      _currentScheduleId = result;
-    });
+    // Validate all slots against DB constraints and simple algorithmic rules before saving
+    _invalidSlotKeys.clear();
+    _saveErrorMessage = null;
+
+    // Helper: check DB teacher constraints
+    bool hasDbConstraint(String tId, int day, int hour) {
+      return _dataProvider.teacherConstraints.any((c) => c.teacherId == tId && c.dayOfWeek == day && c.hourSlot == hour);
+    }
+
+    // Helper: whether a given teacher can teach a subject in a given class
+    bool teacherCanTeachInClass(String tId, String subjectId, String classId) {
+      return _dataProvider.teacherSubjects.any((ts) => ts.teacherId == tId && ts.subjectId == subjectId && ts.classId == classId);
+    }
+
+    // Simple algorithmic checks: teacher not exceeding weekly hard cap (18) by current assignments
+    final Map<String, int> teacherAssigned = {};
+    for (final s in _dataProvider.scheduleSlots) {
+      teacherAssigned[s.teacherId] = (teacherAssigned[s.teacherId] ?? 0) + 1;
+    }
+
+    for (final s in _dataProvider.scheduleSlots) {
+  final key = _slotKeyFor(s.teacherId, s.dayOfWeek, s.hourSlot);
+      // DB constraint violation
+      if (hasDbConstraint(s.teacherId, s.dayOfWeek, s.hourSlot)) {
+        _invalidSlotKeys.add(key);
+        continue;
+      }
+      // Teacher must be able to teach the subject in that class
+      if (!teacherCanTeachInClass(s.teacherId, s.subjectId, s.classId)) {
+        _invalidSlotKeys.add(key);
+        continue;
+      }
+      // Weekly cap violation
+      if ((teacherAssigned[s.teacherId] ?? 0) > 18) {
+        _invalidSlotKeys.add(key);
+        continue;
+      }
+    }
+
+    if (_invalidSlotKeys.isNotEmpty) {
+      // Prepare a message listing count and prevent save
+      _saveErrorMessage = 'Impossibile salvare: ${_invalidSlotKeys.length} slot violano i vincoli. Correggi prima di salvare.';
+      // Refresh UI to show highlights
+      if (mounted) setState(() {});
+      // Show persistent snackbar-like message at bottom
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_saveErrorMessage!),
+          backgroundColor: Theme.of(context).colorScheme.error,
+          duration: const Duration(seconds: 6),
+        ),
+      );
+      return;
+    }
+
+    // If all good, proceed to save by sending the slots to the provider
+    try {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Salvataggio in corso...')));
+      await _dataProvider.saveScheduleSlots(_dataProvider.scheduleSlots, scheduleId: _currentScheduleId);
+      _dataProvider.markScheduleClean();
+      if (mounted) setState(() {
+        _saveErrorMessage = null;
+        _invalidSlotKeys.clear();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Orario salvato con successo')));
+    } catch (e) {
+      if (mounted) setState(() {
+        _saveErrorMessage = 'Errore durante il salvataggio: $e';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Errore durante il salvataggio: $e')));
+    }
   }
 
   // Generate schedule method
@@ -560,10 +894,11 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
 
   Future<String> _generateScheduleInBackground() async {
     // Use the progress-enabled method with yielding points
+    final settings = Provider.of<SettingsProvider>(context, listen: false);
     return await _dataProvider.generateInstituteScheduleWithProgress((progress) {
       // Could show progress in the future, for now just ensure UI responsiveness
       debugPrint('Schedule generation progress: ${(progress * 100).toInt()}%');
-    });
+    }, maxVariableHours: settings.maxVariableHours, autoBreakEnabled: settings.autoBreakEnabled);
   }
 
   // Delete schedule method

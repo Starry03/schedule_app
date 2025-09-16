@@ -30,12 +30,10 @@ Serve the built web folder locally (quick check / PWA test):
 python3 -m http.server 8000 --directory build/web
 ```
 
-## PWA & auto-start helpers
+## Installation
 
 This repo includes convenience scripts to run the static `build/web` on macOS and Linux at user login.
 
-- macOS (LaunchAgent): `scripts/pwa/install_macos.sh` installs a LaunchAgent that runs `python3 -m http.server 9999 --bind 127.0.0.1` at login. Uninstall with `scripts/pwa/uninstall_macos.sh`.
-- Linux (systemd user): `scripts/pwa/install_linux.sh` installs a user systemd service that serves `build/web` on `127.0.0.1:9999`. Remove with `scripts/pwa/uninstall_linux.sh`.
 - Dispatcher: `scripts/install.sh` detects your OS and target and calls the appropriate installer. Use `--target web|native` and `--uninstall` flags.
 
 Examples:
@@ -47,10 +45,6 @@ Examples:
 # Uninstall
 ./scripts/install.sh --target web --uninstall
 ```
-
-## PDF export
-
-Use the in-app "Export PDF" action to generate the schedule PDF. Web builds trigger a browser download. Native builds write a file to a sensible user folder and show the path in a snackbar.
 
 ## Security & secrets (important)
 
@@ -70,7 +64,4 @@ This app reads Supabase credentials from a `.env` file at runtime (client-side).
 
 ## Contributing
 
-This is a small private client — open an issue or submit a PR if you add a packaging step, CI secret injection, or server-side proxy to avoid exposing keys.
-
----
-Private client | Use with care — do not publish keys
+Open an issue or submit a PR :)

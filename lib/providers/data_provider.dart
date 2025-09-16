@@ -346,6 +346,41 @@ class DataProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  /// Persist a list of schedule slots to the database for the given schedule.
+  /// If scheduleId is null, the slots' scheduleId fields are used. This will
+  /// replace any existing slots for that schedule.
+  Future<void> saveScheduleSlots(List<ScheduleSlot> slots, {String? scheduleId}) async {
+    if (slots.isEmpty) return;
+    final targetScheduleId = scheduleId ?? slots.first.scheduleId;
+    if (targetScheduleId.isEmpty) return;
+    try {
+      // Delete existing slots for this schedule
+      await _supabase.from('schedule_slots').delete().eq('schedule_id', targetScheduleId);
+      _scheduleSlots.removeWhere((s) => s.scheduleId == targetScheduleId);
+
+      // Insert provided slots
+      for (final slot in slots.where((s) => s.scheduleId == targetScheduleId)) {
+        final slotInsert = {
+          'schedule_id': slot.scheduleId,
+          'teacher_id': slot.teacherId,
+          'subject_id': slot.subjectId,
+          'class_id': slot.classId,
+          'day_of_week': slot.dayOfWeek,
+          'hour_slot': slot.hourSlot,
+          'created_at': slot.createdAt.toIso8601String(),
+        };
+        final slotResponse = await _supabase.from('schedule_slots').insert(slotInsert).select().single();
+        _scheduleSlots.add(ScheduleSlot.fromJson(slotResponse));
+      }
+
+      _isScheduleDirty = false;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error saving schedule slots: $e');
+      rethrow;
+    }
+  }
+
   Future<void> fetchTeacherConstraints() async {
     final response = await _handleNetworkCall(
       () => _supabase.from('teacher_constraints').select(),
@@ -497,6 +532,8 @@ class DataProvider with ChangeNotifier {
   Future<List<ScheduleSlot>> _generateIntelligentSchedule({
     required String scheduleId,
     required String classId,
+    int maxVarHours = 6,
+    bool autoBreakEnabled = false,
   }) async {
     final List<ScheduleSlot> slots = [];
     final Map<String, int> teacherHoursPerWeek = _teacherWeeklyHours; // shared across classes
@@ -537,6 +574,45 @@ class DataProvider with ChangeNotifier {
       if (_teacherBusySlots[teacherId]?.contains(key) ?? false) return false;
       if (teacherBlockedSlots[teacherId]?.contains(key) ?? false) return false;
       if ((teacherHoursPerWeek[teacherId] ?? 0) >= 18) return false;
+      // Enforce max variable hours per day for this teacher
+      // Count both slots already placed for this class and global busy slots for the teacher
+      int teacherCurrentDayCount = 0;
+      for (final s in slots) {
+        if (s.teacherId == teacherId && s.dayOfWeek == day) teacherCurrentDayCount++;
+      }
+      if (_teacherBusySlots.containsKey(teacherId)) {
+        for (final busy in _teacherBusySlots[teacherId]!) {
+          final parts = busy.split('-');
+          if (parts.length >= 1) {
+            final d = int.tryParse(parts[0]) ?? 0;
+            if (d == day) teacherCurrentDayCount++;
+          }
+        }
+      }
+      if (teacherCurrentDayCount >= maxVarHours) return false;
+
+      // If auto-break is enabled, avoid placing more than 2 consecutive hours for a teacher
+      if (autoBreakEnabled) {
+        bool hasTeacherAtHour(String teacherId, int day, int h) {
+          final inSlots = slots.any((ss) => ss.teacherId == teacherId && ss.dayOfWeek == day && ss.hourSlot == h);
+          final inBusy = _teacherBusySlots[teacherId]?.contains('$day-$h') ?? false;
+          return inSlots || inBusy;
+        }
+
+        int consecutiveBefore = 0;
+        int h = hour - 1;
+        while (h >= 1 && consecutiveBefore < 2) {
+          if (hasTeacherAtHour(teacherId, day, h)) { consecutiveBefore++; h--; continue; }
+          break;
+        }
+        int consecutiveAfter = 0;
+        h = hour + 1;
+        while (h <= 6 && consecutiveAfter < 2) {
+          if (hasTeacherAtHour(teacherId, day, h)) { consecutiveAfter++; h++; continue; }
+          break;
+        }
+        if ((consecutiveBefore + consecutiveAfter) >= 2) return false;
+      }
       final subj = subjectById[subjectId];
       if (subj == null) return false;
       final perDay = subjectDailyCount.putIfAbsent(subjectId, () => {});
@@ -626,6 +702,8 @@ class DataProvider with ChangeNotifier {
 
   List<ScheduleSlot> _distributeInstituteExtraHours({
     required String scheduleId,
+    int maxVarHours = 6,
+    bool autoBreakEnabled = false,
   }) {
     final List<ScheduleSlot> extraSlots = [];
     
@@ -665,6 +743,8 @@ class DataProvider with ChangeNotifier {
             day: day,
             hour: hour,
             teacherBlockedSlots: teacherBlockedSlots,
+            maxVarHours: maxVarHours,
+            autoBreakEnabled: autoBreakEnabled,
           )) {
             // Place the extra hour - use "Extra" class for extra hours
             final extraSlot = ScheduleSlot(
@@ -695,14 +775,43 @@ class DataProvider with ChangeNotifier {
     required int day,
     required int hour,
     required Map<String, Set<String>> teacherBlockedSlots,
+    int maxVarHours = 6,
+    bool autoBreakEnabled = false,
   }) {
     final key = '$day-$hour';
     
-    // Check if the teacher is already busy at this time (institute-wide)
+  // Check if the teacher is already busy at this time (institute-wide)
     if (_teacherBusySlots[teacherId]?.contains(key) ?? false) return false;
     
     // Check teacher constraints (blocked slots)
     if (teacherBlockedSlots[teacherId]?.contains(key) ?? false) return false;
+
+    // Enforce per-day max variable hours
+    int currentDayCount = 0;
+    if (_teacherBusySlots.containsKey(teacherId)) {
+      for (final s in _teacherBusySlots[teacherId]!) {
+        final parts = s.split('-');
+        if (parts.length == 2) {
+          final d = int.tryParse(parts[0]) ?? 0;
+          if (d == day) currentDayCount++;
+        }
+      }
+    }
+    if (currentDayCount >= maxVarHours) return false;
+
+    // If autoBreakEnabled enforce not more than 2 consecutive hours
+    if (autoBreakEnabled) {
+      int consec = 0;
+      // check before
+      for (int h = hour - 1; h >= 1 && consec < 2; h--) {
+        if (_teacherBusySlots[teacherId]?.contains('$day-$h') ?? false) consec++; else break;
+      }
+      // check after
+      for (int h = hour + 1; h <= 6 && consec < 2; h++) {
+        if (_teacherBusySlots[teacherId]?.contains('$day-$h') ?? false) consec++; else break;
+      }
+      if (consec >= 2) return false;
+    }
 
     // Additional check: ensure teacher doesn't exceed weekly limit
     final currentWeeklyHours = _teacherWeeklyHours[teacherId] ?? 0;
@@ -779,7 +888,7 @@ class DataProvider with ChangeNotifier {
     return generateInstituteScheduleWithProgress(null);
   }
 
-  Future<String> generateInstituteScheduleWithProgress(Function(double)? onProgress) async {
+  Future<String> generateInstituteScheduleWithProgress(Function(double)? onProgress, {int? maxVariableHours, bool? autoBreakEnabled}) async {
     try {
       // Fetch all necessary data
   await fetchClasses();
@@ -814,6 +923,10 @@ class DataProvider with ChangeNotifier {
 
   if (onProgress != null) onProgress(0.2); // 20% progress
 
+      // Respect generation settings passed by caller (defaults below)
+      final int maxPerDay = maxVariableHours ?? 6;
+      final bool enforceAutoBreak = autoBreakEnabled ?? false;
+
       // Generate schedule for each class and associate with the NEW schedule
       final totalClasses = _classes.length;
       for (int i = 0; i < _classes.length; i++) {
@@ -830,6 +943,8 @@ class DataProvider with ChangeNotifier {
         final List<ScheduleSlot> generatedSlots = await _generateIntelligentSchedule(
           scheduleId: masterSchedule.id,
           classId: classModel.id,
+          maxVarHours: maxPerDay,
+          autoBreakEnabled: enforceAutoBreak,
         );
 
         // Save slots to database
@@ -853,6 +968,8 @@ class DataProvider with ChangeNotifier {
       // AFTER all regular class schedules are generated, distribute extra hours ONCE
       final List<ScheduleSlot> extraHoursSlots = _distributeInstituteExtraHours(
         scheduleId: masterSchedule.id,
+        maxVarHours: maxPerDay,
+        autoBreakEnabled: enforceAutoBreak,
       );
       
       // Save extra hours slots to database
