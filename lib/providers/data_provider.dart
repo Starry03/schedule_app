@@ -411,6 +411,7 @@ class DataProvider with ChangeNotifier {
       'teacher_id': constraint.teacherId,
       'day_of_week': constraint.dayOfWeek,
       'hour_slot': constraint.hourSlot,
+      'class_id': constraint.classId,
       'created_at': constraint.createdAt.toIso8601String(),
     };
     
@@ -540,9 +541,13 @@ class DataProvider with ChangeNotifier {
     final Map<String, Set<String>> teacherBlockedSlots = {};
 
     // Initialize teacher constraints
+    // Treat only constraints with classId == null as avoiding (teacher must not be assigned at that time).
+    // Class-specific mandatory constraints (classId != null) are handled later when we know which class we're generating.
     for (final constraint in _teacherConstraints) {
-      final slotKey = '${constraint.dayOfWeek}-${constraint.hourSlot}';
-      teacherBlockedSlots.putIfAbsent(constraint.teacherId, () => <String>{}).add(slotKey);
+      if (constraint.classId == null) {
+        final slotKey = '${constraint.dayOfWeek}-${constraint.hourSlot}';
+        teacherBlockedSlots.putIfAbsent(constraint.teacherId, () => <String>{}).add(slotKey);
+      }
     }
 
     // Track teacher hours per week
@@ -553,6 +558,11 @@ class DataProvider with ChangeNotifier {
     // Filter teacher-subjects for this class and shuffle
     final classTeacherSubjects = _teacherSubjects.where((ts) => ts.classId == classId).toList()
       ..shuffle();
+
+    // Map teacherId -> one of their TeacherSubject entries for this class (if any)
+    final Map<String, TeacherSubject> teacherSubjectForClass = {
+      for (final ts in classTeacherSubjects) ts.teacherId: ts
+    };
 
     // Quick access to subjects data
     final Map<String, Subject> subjectById = {for (final s in _subjects) s.id: s};
@@ -617,7 +627,7 @@ class DataProvider with ChangeNotifier {
       if (subj == null) return false;
       final perDay = subjectDailyCount.putIfAbsent(subjectId, () => {});
       final currentDayCount = perDay[day] ?? 0;
-  if (currentDayCount >= subj.maxDailyHours) return false;
+      if (currentDayCount >= subj.maxDailyHours) return false;
       return true;
     }
 
@@ -642,6 +652,32 @@ class DataProvider with ChangeNotifier {
       teacherHoursPerWeek[ts.teacherId] = (teacherHoursPerWeek[ts.teacherId] ?? 0) + 1;
       final perDay = subjectDailyCount.putIfAbsent(ts.subjectId, () => {});
       perDay[day] = (perDay[day] ?? 0) + 1;
+    }
+
+    // Pre-place mandatory constraints for this class: constraints that have classId == classId
+    for (final constraint in _teacherConstraints) {
+      if (constraint.classId != null && constraint.classId == classId) {
+        final slotKey = '${constraint.dayOfWeek}-${constraint.hourSlot}';
+        // If the slot is already occupied for the class, skip
+        if (classOccupiedSlots.contains(slotKey)) continue;
+
+        // Find a teacher-subject mapping for this teacher in this class
+        final ts = teacherSubjectForClass[constraint.teacherId];
+        if (ts == null) {
+          // Teacher is not assigned to teach this class — can't place mandatory constraint; log and skip
+          debugPrint('Mandatory constraint for teacher ${constraint.teacherId} in class $classId at ${constraint.dayOfWeek}-${constraint.hourSlot} skipped: teacher has no assigned subject for this class');
+          continue;
+        }
+
+        // Respect generator placement rules before forcing placement
+        if (!canPlace(teacherId: ts.teacherId, day: constraint.dayOfWeek, hour: constraint.hourSlot, subjectId: ts.subjectId)) {
+          debugPrint('Mandatory constraint for teacher ${constraint.teacherId} in class $classId at ${constraint.dayOfWeek}-${constraint.hourSlot} cannot be placed due to generator constraints');
+          continue;
+        }
+
+        // Place the mandatory slot
+        place(ts: ts, day: constraint.dayOfWeek, hour: constraint.hourSlot);
+      }
     }
 
     for (final ts in classTeacherSubjects) {

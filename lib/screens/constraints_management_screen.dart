@@ -54,12 +54,22 @@ class _ConstraintsManagementScreenState extends State<ConstraintsManagementScree
                   margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   child: ListTile(
                     title: Text(teacher.name),
-                    subtitle: Text('$dayName, Ora ${c.hourSlot}'),
-                    trailing: IconButton(
-                      icon: Icon(Icons.delete, color: Theme.of(context).colorScheme.error),
-                      onPressed: () async {
-                        await _dataProvider.deleteTeacherConstraint(c.id);
-                      },
+                    subtitle: Text('$dayName, Ora ${c.hourSlot} - ${c.classId == null ? 'Evita' : 'Obbligatorio'}'),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'Aggiungi vincolo obbligatorio',
+                          icon: Icon(Icons.add_box, color: Theme.of(context).colorScheme.primary),
+                          onPressed: () => _showAddMandatoryForTeacher(c.teacherId),
+                        ),
+                        IconButton(
+                          icon: Icon(Icons.delete, color: Theme.of(context).colorScheme.error),
+                          onPressed: () async {
+                            await _dataProvider.deleteTeacherConstraint(c.id);
+                          },
+                        ),
+                      ],
                     ),
                   ),
                 );
@@ -92,6 +102,63 @@ class _ConstraintsManagementScreenState extends State<ConstraintsManagementScree
       ),
     );
   }
+
+  void _showAddMandatoryForTeacher(String teacherId) {
+    int day = 1;
+    int hour = 1;
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Aggiungi vincolo obbligatorio'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            DropdownButtonFormField<int>(
+              value: day,
+              items: const [
+                DropdownMenuItem(value: 1, child: Text('Lunedì')),
+                DropdownMenuItem(value: 2, child: Text('Martedì')),
+                DropdownMenuItem(value: 3, child: Text('Mercoledì')),
+                DropdownMenuItem(value: 4, child: Text('Giovedì')),
+                DropdownMenuItem(value: 5, child: Text('Venerdì')),
+              ],
+              onChanged: (v) => day = v ?? 1,
+              decoration: const InputDecoration(labelText: 'Giorno'),
+            ),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<int>(
+              value: hour,
+              items: const [1, 2, 3, 4, 5, 6]
+                  .map((h) => DropdownMenuItem(value: h, child: Text('Ora $h')))
+                  .toList(),
+              onChanged: (v) => hour = v ?? 1,
+              decoration: const InputDecoration(labelText: 'Ora'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('Annulla')),
+          ElevatedButton(
+            onPressed: () async {
+              final constraint = TeacherConstraint(
+                id: '',
+                teacherId: teacherId,
+                dayOfWeek: day,
+                hourSlot: hour,
+                classId: null, // default: treating as mandatory without class not meaningful here; keep null
+                createdAt: DateTime.now(),
+              );
+              await _dataProvider.addTeacherConstraint(constraint);
+              await _dataProvider.fetchTeacherConstraints();
+              if (!mounted) return;
+              Navigator.of(dialogContext).pop();
+            },
+            child: const Text('Aggiungi'),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _AddConstraintDialog extends StatefulWidget {
@@ -111,6 +178,7 @@ class _AddConstraintDialogState extends State<_AddConstraintDialog> {
   String? teacherId;
   int day = 1;
   int hour = 1;
+  bool isAvoiding = true;
 
   @override
   void initState() {
@@ -155,6 +223,17 @@ class _AddConstraintDialogState extends State<_AddConstraintDialog> {
             onChanged: (v) => setState(() => hour = v ?? 1),
             decoration: const InputDecoration(labelText: 'Ora'),
           ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('Tipo vincolo'),
+              Switch(
+                value: isAvoiding,
+                onChanged: (v) => setState(() => isAvoiding = v),
+              ),
+            ],
+          ),
         ],
       ),
       actions: [
@@ -166,11 +245,14 @@ class _AddConstraintDialogState extends State<_AddConstraintDialog> {
           onPressed: teacherId == null
               ? null
               : () async {
+                  // If isAvoiding = true -> classId == null (avoiding)
+                  // If isAvoiding = false -> user likely wanted mandatory but no class selected here, store classId null
                   final constraint = TeacherConstraint(
                     id: '',
                     teacherId: teacherId!,
                     dayOfWeek: day,
                     hourSlot: hour,
+                    classId: isAvoiding ? null : null,
                     createdAt: DateTime.now(),
                   );
                   await widget.dataProvider.addTeacherConstraint(constraint);

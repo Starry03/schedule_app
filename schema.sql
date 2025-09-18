@@ -50,8 +50,10 @@ CREATE TABLE public.teacher_constraints (
   day_of_week integer NOT NULL CHECK (day_of_week >= 1 AND day_of_week <= 5),
   hour_slot integer NOT NULL CHECK (hour_slot >= 1 AND hour_slot <= 6),
   created_at timestamp with time zone NOT NULL DEFAULT now(),
+  class_id uuid,
   CONSTRAINT teacher_constraints_pkey PRIMARY KEY (id),
-  CONSTRAINT teacher_constraints_teacher_id_fkey FOREIGN KEY (teacher_id) REFERENCES public.teachers(id)
+  CONSTRAINT teacher_constraints_teacher_id_fkey FOREIGN KEY (teacher_id) REFERENCES public.teachers(id),
+  CONSTRAINT teacher_constraints_class_id_fkey FOREIGN KEY (class_id) REFERENCES public.classes(id)
 );
 CREATE TABLE public.teacher_subjects (
   id uuid NOT NULL DEFAULT gen_random_uuid(),

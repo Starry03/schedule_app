@@ -217,6 +217,40 @@ class _TeacherManagementScreenState extends State<TeacherManagementScreen> {
   }
 }
 
+class _ClassSelectDialog extends StatelessWidget {
+  final DataProvider dataProvider;
+
+  const _ClassSelectDialog({required this.dataProvider});
+
+  @override
+  Widget build(BuildContext context) {
+    final classes = dataProvider.classes;
+    return AlertDialog(
+      title: const Text('Seleziona classe (obbligatorio)'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: classes.isEmpty
+            ? const Text('Nessuna classe disponibile')
+            : ListView.builder(
+                shrinkWrap: true,
+                itemCount: classes.length,
+                itemBuilder: (context, index) {
+                  final c = classes[index];
+                  return ListTile(
+                    title: Text(c.name),
+                    subtitle: Text('Grade ${c.grade} ${c.section}'),
+                    onTap: () => Navigator.of(context).pop(c.id),
+                  );
+                },
+              ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(null), child: const Text('Annulla')),
+      ],
+    );
+  }
+}
+
 class AddEditTeacherDialog extends StatefulWidget {
   final Teacher? teacher;
 
@@ -357,6 +391,8 @@ class _TeacherConstraintsScreenState extends State<TeacherConstraintsScreen> {
   Set<String> blockedSlots = {};
   // Map of slotKey -> constraintId for existing persisted constraints for this teacher
   final Map<String, String> _existingConstraintIds = {};
+  // Map of slotKey -> selected classId for mandatory constraints (null = avoiding)
+  final Map<String, String?> _existingConstraintClassIds = {};
 
   @override
   void initState() {
@@ -373,10 +409,12 @@ class _TeacherConstraintsScreenState extends State<TeacherConstraintsScreen> {
       final constraints = dp.teacherConstraints.where((c) => c.teacherId == widget.teacher.id).toList();
       final newBlocked = <String>{};
       _existingConstraintIds.clear();
+  // _existingConstraintTypes removed; we rely on _existingConstraintClassIds
       for (final c in constraints) {
         final slotKey = '${c.dayOfWeek - 1}-${c.hourSlot - 1}';
         newBlocked.add(slotKey);
-        _existingConstraintIds[slotKey] = c.id;
+          _existingConstraintIds[slotKey] = c.id;
+          _existingConstraintClassIds[slotKey] = c.classId;
       }
       setState(() {
         blockedSlots = newBlocked;
@@ -442,17 +480,92 @@ class _TeacherConstraintsScreenState extends State<TeacherConstraintsScreen> {
                         final dayIndex = dayEntry.key;
                         final slotKey = '$dayIndex-$hourIndex';
                         final isBlocked = blockedSlots.contains(slotKey);
+                        final classIdForSlot = _existingConstraintClassIds[slotKey];
                         
                         return DataCell(
                           GestureDetector(
-                            onTap: () {
-                              setState(() {
-                                if (isBlocked) {
-                                  blockedSlots.remove(slotKey);
-                                } else {
+                            // Single tap: cycle states: none -> avoiding -> mandatory -> none
+                            onTap: () async {
+                              // Cycle: none -> avoiding (class null) -> choose class (mandatory) -> none
+                              if (!isBlocked) {
+                                setState(() {
                                   blockedSlots.add(slotKey);
-                                }
+                                  // default to avoiding (classId == null)
+                                  _existingConstraintClassIds[slotKey] = null;
+                                });
+                                return;
+                              }
+                              // If blocked and currently avoiding -> second tap: choose class
+                              final currClassId = _existingConstraintClassIds[slotKey];
+                              final currAvoiding = currClassId == null;
+                              if (currAvoiding) {
+                                // open class picker dialog to select a class for mandatory constraint
+                                final selected = await showDialog<String?>(
+                                  context: context,
+                                  builder: (ctx) => _ClassSelectDialog(dataProvider: Provider.of<DataProvider>(context, listen: false)),
+                                );
+                                  if (selected != null) {
+                                    setState(() {
+                                      _existingConstraintClassIds[slotKey] = selected;
+                                    });
+                                  }
+                                return;
+                              }
+                              // If blocked and currently mandatory -> third tap: reset/remove
+                              setState(() {
+                                blockedSlots.remove(slotKey);
+                                _existingConstraintClassIds.remove(slotKey);
+                                _existingConstraintClassIds.remove(slotKey);
                               });
+                            },
+                            // Double tap: force mandatory immediately
+                            onDoubleTap: () async {
+                              // Force mandatory: open class picker then set mandatory if chosen
+                              final selected = await showDialog<String?>(
+                                context: context,
+                                builder: (ctx) => _ClassSelectDialog(dataProvider: Provider.of<DataProvider>(context, listen: false)),
+                              );
+                              if (selected != null) {
+                                setState(() {
+                                  blockedSlots.add(slotKey);
+                                  _existingConstraintClassIds[slotKey] = selected;
+                                });
+                              }
+                            },
+                            onLongPress: () async {
+                              // Choose constraint type for this slot if it's blocked
+                              if (!blockedSlots.contains(slotKey)) return;
+                              final choice = await showDialog<bool?>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Text('Tipo vincolo'),
+                                  content: const Text('Scegli il tipo di vincolo:\nEvita = il docente non deve essere assegnato in questa ora\nObbligatorio = il docente deve essere assegnato in questa ora'),
+                                  actions: [
+                                    TextButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Evita')),
+                                    TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Obbligatorio')),
+                                    TextButton(onPressed: () => Navigator.of(ctx).pop(null), child: const Text('Annulla')),
+                                  ],
+                                ),
+                              );
+                              if (choice != null) {
+                                if (choice) {
+                                  // Evita -> set classId null
+                                  setState(() {
+                                    _existingConstraintClassIds[slotKey] = null;
+                                  });
+                                } else {
+                                  // Obbligatorio -> need to pick a class
+                                  final selected = await showDialog<String?>(
+                                    context: context,
+                                    builder: (ctx2) => _ClassSelectDialog(dataProvider: Provider.of<DataProvider>(context, listen: false)),
+                                  );
+                                  if (selected != null) {
+                                    setState(() {
+                                      _existingConstraintClassIds[slotKey] = selected;
+                                    });
+                                  }
+                                }
+                              }
                             },
                             child: Container(
                               width: 80,
@@ -463,10 +576,15 @@ class _TeacherConstraintsScreenState extends State<TeacherConstraintsScreen> {
                                 borderRadius: BorderRadius.circular(4),
                               ),
                               child: Center(
-                                child: Icon(
-                                  isBlocked ? Icons.block : Icons.check,
-                                  color: isBlocked ? Colors.black : Colors.grey.shade600,
-                                ),
+                                child: isBlocked
+                                    ? Icon(
+                                        (classIdForSlot != null) ? Icons.flag : Icons.block,
+                                        color: Colors.black,
+                                      )
+                                    : Icon(
+                                        Icons.check,
+                                        color: Colors.grey.shade600,
+                                      ),
                               ),
                             ),
                           ),
@@ -509,11 +627,13 @@ class _TeacherConstraintsScreenState extends State<TeacherConstraintsScreen> {
           if (parts.length != 2) continue;
           final dayIndex = int.tryParse(parts[0]) ?? 0;
           final hourIndex = int.tryParse(parts[1]) ?? 0;
+          final classIdForSlot = _existingConstraintClassIds[key];
           final constraint = TeacherConstraint(
             id: '',
             teacherId: widget.teacher.id,
             dayOfWeek: dayIndex + 1, // convert to 1-based
             hourSlot: hourIndex + 1,
+            classId: classIdForSlot,
             createdAt: DateTime.now(),
           );
           await dp.addTeacherConstraint(constraint);
