@@ -879,9 +879,31 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Errore durante la generazione: $e')),
-      );
+      final err = e.toString();
+      // If this is a generation conflict summary (thrown by DataProvider), show a dialog with details
+      if (err.contains('conflicts')) {
+        final parts = err.split('\n');
+        // Remove the first line if it's the generic header
+        final details = parts.length > 1 ? parts.sublist(1) : parts;
+        showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Conflitti nella generazione'),
+            content: SingleChildScrollView(
+              child: ListBody(
+                children: details.map((d) => Text(d)).toList(),
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK')),
+            ],
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Errore durante la generazione: $e')),
+        );
+      }
     } finally {
       // Stop loading state
       if (mounted) {

@@ -26,6 +26,12 @@ class DataProvider with ChangeNotifier {
   List<TeacherSubject> _teacherSubjects = [];
   List<TeacherConstraint> _teacherConstraints = [];
 
+  // Generation diagnostics: last generation run conflicts/messages
+  List<String> _lastGenerationConflicts = [];
+
+  List<String> get lastGenerationConflicts => _lastGenerationConflicts;
+  bool get lastGenerationSucceeded => _lastGenerationConflicts.isEmpty;
+
   // Track institute-wide teacher busy slots and weekly hours to avoid clashes across classes
   final Map<String, Set<String>> _teacherBusySlots = {}; // teacherId -> set of 'day-hour'
   final Map<String, int> _teacherWeeklyHours = {}; // teacherId -> hours scheduled this week
@@ -501,10 +507,32 @@ class DataProvider with ChangeNotifier {
       await fetchTeachers();
 
       // 3. Generate schedule slots using intelligent algorithm scoped to this class
+      // Clear previous generation diagnostics
+      _lastGenerationConflicts = [];
+
       final List<ScheduleSlot> generatedSlots = await _generateIntelligentSchedule(
         scheduleId: newSchedule.id,
         classId: classId,
       );
+
+      // If generator reported conflicts (via _lastGenerationConflicts filled inside), abort saving the
+      // schedule for this class so we don't persist a partial/invalid schedule silently.
+      if (_lastGenerationConflicts.isNotEmpty) {
+        // Remove the schedule record we just created to avoid leaving an empty/partial schedule in DB
+        try {
+          await _supabase.from('schedules').delete().eq('id', newSchedule.id);
+        } catch (e) {
+          debugPrint('Failed to delete schedule after generation conflicts: $e');
+        }
+
+        // Mark dirty state appropriately and notify listeners so the UI can update
+        _isScheduleDirty = false;
+        notifyListeners();
+
+        // Throw an exception with a summary of conflicts so the caller/UI can surface it
+        final summary = _lastGenerationConflicts.join('\n');
+        throw Exception('Generation for class $classId failed with conflicts:\n$summary');
+      }
 
   // 4. Save slots to database
       for (final slot in generatedSlots) {
@@ -565,7 +593,9 @@ class DataProvider with ChangeNotifier {
     };
 
     // Quick access to subjects data
-    final Map<String, Subject> subjectById = {for (final s in _subjects) s.id: s};
+  final Map<String, Subject> subjectById = {for (final s in _subjects) s.id: s};
+  final Map<String, Teacher> teacherById = {for (final t in _teachers) t.id: t};
+  final Map<String, ClassModel> classById = {for (final c in _classes) c.id: c};
 
     // Per-class occupancy to avoid double booking the same class slot
     final Set<String> classOccupiedSlots = <String>{}; // 'day-hour'
@@ -658,24 +688,28 @@ class DataProvider with ChangeNotifier {
     for (final constraint in _teacherConstraints) {
       if (constraint.classId != null && constraint.classId == classId) {
         final slotKey = '${constraint.dayOfWeek}-${constraint.hourSlot}';
-        // If the slot is already occupied for the class, skip
-        if (classOccupiedSlots.contains(slotKey)) continue;
+        // If the slot is already occupied for the class, skip and record conflict
+        if (classOccupiedSlots.contains(slotKey)) {
+          final tName = teacherById[constraint.teacherId]?.name ?? constraint.teacherId;
+          final cName = classById[classId]?.name ?? classId;
+          _lastGenerationConflicts.add('Slot ${constraint.dayOfWeek}:${constraint.hourSlot} for mandatory constraint of teacher $tName already occupied for class $cName');
+          continue;
+        }
 
         // Find a teacher-subject mapping for this teacher in this class
         final ts = teacherSubjectForClass[constraint.teacherId];
         if (ts == null) {
-          // Teacher is not assigned to teach this class — can't place mandatory constraint; log and skip
-          debugPrint('Mandatory constraint for teacher ${constraint.teacherId} in class $classId at ${constraint.dayOfWeek}-${constraint.hourSlot} skipped: teacher has no assigned subject for this class');
+          // Teacher is not assigned to teach this class — can't place mandatory constraint; record conflict
+          final tName = teacherById[constraint.teacherId]?.name ?? constraint.teacherId;
+          final cName = classById[classId]?.name ?? classId;
+          final msg = 'Mandatory constraint for teacher $tName in class $cName at ${constraint.dayOfWeek}-${constraint.hourSlot} skipped: teacher has no assigned subject for this class';
+          debugPrint(msg);
+          _lastGenerationConflicts.add(msg);
           continue;
         }
 
-        // Respect generator placement rules before forcing placement
-        if (!canPlace(teacherId: ts.teacherId, day: constraint.dayOfWeek, hour: constraint.hourSlot, subjectId: ts.subjectId)) {
-          debugPrint('Mandatory constraint for teacher ${constraint.teacherId} in class $classId at ${constraint.dayOfWeek}-${constraint.hourSlot} cannot be placed due to generator constraints');
-          continue;
-        }
-
-        // Place the mandatory slot
+        // Force-place the mandatory slot regardless of canPlace. This makes mandatory class constraints high-priority
+        // and part of the initial schedule state. We still update all counters via place().
         place(ts: ts, day: constraint.dayOfWeek, hour: constraint.hourSlot);
       }
     }
@@ -683,7 +717,9 @@ class DataProvider with ChangeNotifier {
     for (final ts in classTeacherSubjects) {
       final subj = subjectById[ts.subjectId];
       if (subj == null) continue;
-      int remaining = subj.weeklyHours;
+      // Subtract any slots already placed for this teacher/subject (e.g. mandatory pre-placements)
+      final alreadyPlacedForThis = slots.where((s) => s.teacherId == ts.teacherId && s.subjectId == ts.subjectId && s.classId == classId).length;
+      int remaining = subj.weeklyHours - alreadyPlacedForThis;
       
       // Yield to UI thread occasionally during heavy computation
       await Future.delayed(Duration.zero);
@@ -730,6 +766,12 @@ class DataProvider with ChangeNotifier {
             remaining--;
           }
         }
+      }
+      if (remaining > 0) {
+        final tName = teacherById[ts.teacherId]?.name ?? ts.teacherId;
+        final sName = subjectById[ts.subjectId]?.name ?? ts.subjectId;
+        final cName = classById[classId]?.name ?? classId;
+        _lastGenerationConflicts.add('Could not place ${remaining} hours for subject $sName (teacher $tName) in class $cName');
       }
     }
 
@@ -976,12 +1018,31 @@ class DataProvider with ChangeNotifier {
           }
         }
         
+        // Reset per-class conflicts before generating this class
+        _lastGenerationConflicts = [];
+
         final List<ScheduleSlot> generatedSlots = await _generateIntelligentSchedule(
           scheduleId: masterSchedule.id,
           classId: classModel.id,
           maxVarHours: maxPerDay,
           autoBreakEnabled: enforceAutoBreak,
         );
+
+        // If conflicts were recorded for this class, abort the entire institute generation
+        if (_lastGenerationConflicts.isNotEmpty) {
+          // Delete master schedule and any slots that may have been inserted
+          try {
+            await _supabase.from('schedule_slots').delete().eq('schedule_id', masterSchedule.id);
+            await _supabase.from('schedules').delete().eq('id', masterSchedule.id);
+          } catch (e) {
+            debugPrint('Failed to cleanup master schedule after generation conflicts: $e');
+          }
+
+          // Notify listeners and throw an aggregated exception so callers can present conflicts
+          notifyListeners();
+          final summary = _lastGenerationConflicts.join('\n');
+          throw Exception('Institute generation aborted due to conflicts:\n$summary');
+        }
 
         // Save slots to database
         for (final slot in generatedSlots) {
