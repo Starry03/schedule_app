@@ -53,6 +53,7 @@ This app reads Supabase credentials from a `.env` file at runtime (client-side).
 - Never publish `.env` with real credentials to a public repo.
 - If keys are exposed, rotate them immediately in the Supabase dashboard.
 - Prefer storing secrets in a trusted server-side backend or use environment injection in build/CI (do not embed service keys into public builds).
+- Communication is not encrypted between client and Supabase.
 
 ## Troubleshooting
 
