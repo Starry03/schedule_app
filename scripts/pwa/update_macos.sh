@@ -8,4 +8,4 @@ git pull
 flutter build web --release
 
 # run install script to update installed files
-./install_macos.sh
+./scripts/pwa/install_macos.sh
